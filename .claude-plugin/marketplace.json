@@ -1,0 +1,13 @@
+{
+  "name": "rosetta-plugins",
+  "owner": {
+    "name": "Rosetta"
+  },
+  "plugins": [
+    {
+      "name": "bambu-studio-connector",
+      "source": "./",
+      "description": "Find 3D model files, inspect and separate their parts, load them onto the Bambu Studio print bed, and watch the printer (camera bed checks, print status) — you press print"
+    }
+  ]
+}

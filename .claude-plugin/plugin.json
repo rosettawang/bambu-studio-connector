@@ -1,0 +1,15 @@
+{
+  "name": "bambu-studio-connector",
+  "version": "0.4.0",
+  "description": "Find 3D model files, inspect and separate their parts, load them onto the Bambu Studio print bed, and watch the printer (camera bed checks, print status) \u2014 the user presses print",
+  "author": {
+    "name": "Rosetta"
+  },
+  "keywords": [
+    "3d-printing",
+    "bambu-studio",
+    "stl",
+    "3mf"
+  ],
+  "license": "MIT"
+}

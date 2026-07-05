@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "bambu-studio": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.js"]
+    },
+    "bambu-printer": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/printer-launcher.js"]
+    }
+  }
+}
