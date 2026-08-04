@@ -25,6 +25,16 @@ Manual fallback: ask the user for IP, access code, and serial (printer touchscre
 
 The printer stays in normal cloud mode (no Developer Mode). Status reads and camera snapshots work there; control commands (pause/resume/stop, temperatures, uploads) may be rejected by recent firmware with auth errors (e.g. 84033543). If that happens, explain the Developer Mode limitation once — do not retry in a loop.
 
+## Notifying the user (phone push)
+
+Use the `send_push` tool (on the `bambu-studio` server) to reach the user on their phone via ntfy when they need to act — clear the bed, press Print for a scheduled print, or a print finished/failed. Requires `ntfy_topic` in printer-config.json and the ntfy app subscribed to it; if the tool reports no topic set, tell the user to add one and subscribe.
+
+Guidance:
+- Only push when action is genuinely needed or a result is worth knowing. Silence is fine — don't push "still printing" every check.
+- Keep it short and specific with a title and next step, e.g. title "Chungus: bed not clear", message "Hive base still on the plate — clear it, then press Print in Bambu Studio."
+- Use `priority: "high"` for action-needed alerts, default for FYI (print finished).
+- This is the primary alert channel for scheduled tasks, since the user isn't watching chat when those run.
+
 ## Bed check ("is the bed clear?")
 
 1. Optionally call `set_light` to turn on the work light if a previous snapshot came back dark (this may fail without Developer Mode — fall back to asking the user to check lighting).

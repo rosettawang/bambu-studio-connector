@@ -43,7 +43,7 @@ Manual: create `printer-config.json` in `~/.bambu-studio-connector/` (or a Cowor
 - `server/index.js` — dependency-free MCP server: open files in Bambu Studio, search for model files, Bambu account sign-in/sync (cloud API + SSDP discovery)
 - `server/printer-launcher.js` — runs [bambu-printer-mcp](https://github.com/DMontgomery40/bambu-printer-mcp) via npx for camera snapshots and live printer status
 - `skills/bambu-print-prep` — workflow + `model_tools.py`: inspect/render/extract/scale/lay-flat/arrange parts from 3MF/STL, no dependencies for inspection
-- `skills/bambu-print-watch` — bed-clear camera checks, status reports, scheduled monitoring; hard rule against starting prints
+- `skills/bambu-print-watch` — bed-clear camera checks, status reports, scheduled monitoring; hard rule against starting prints. Sends phone alerts via `send_push` (free [ntfy](https://ntfy.sh) — set `ntfy_topic` in printer-config.json and subscribe in the ntfy app)
 
 ## Caveats
 

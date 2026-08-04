@@ -1,4 +1,5 @@
 .DS_Store
+Icon?
 __pycache__/
 node_modules/
 *.plugin

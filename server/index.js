@@ -85,6 +85,17 @@ function saveCloud(obj) {
   fs.writeFileSync(CLOUD_FILE, JSON.stringify(obj, null, 2), { mode: 0o600 });
 }
 
+function readPrinterConfig() {
+  for (const p of CONFIG_CANDIDATES) {
+    try {
+      return JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch {
+      /* try next */
+    }
+  }
+  return {};
+}
+
 function findPrinterConfigPath() {
   for (const p of CONFIG_CANDIDATES) {
     if (fs.existsSync(p)) return p;
@@ -291,6 +302,26 @@ const TOOLS = [
       "Requires a prior bambu_account_login. For detailed local status use the bambu-printer server's get_printer_status instead.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "send_push",
+    description:
+      "Send a push notification to the user's phone via ntfy (free, no account). Use to alert the user when they need to act: " +
+      "clear the print bed, press Print in Bambu Studio for a scheduled print, or when a print finished or failed. " +
+      "Requires 'ntfy_topic' set in printer-config.json and the ntfy app subscribed to that topic.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "Notification body text" },
+        title: { type: "string", description: "Short title (optional)" },
+        priority: {
+          type: "string",
+          enum: ["min", "low", "default", "high", "urgent"],
+          description: "Notification priority (optional, default 'default'); use 'high' for action-needed alerts",
+        },
+      },
+      required: ["message"],
+    },
+  },
 ];
 
 function send(msg) {
@@ -485,6 +516,44 @@ function handleToolCall(id, params) {
         toolText(id, lines.join("\n") || "No printers on this account.");
       })
       .catch((e) => toolText(id, `Could not reach the Bambu API: ${e.message}`, true));
+    return;
+  }
+
+  if (name === "send_push") {
+    const message = (args.message || "").trim();
+    if (!message) return toolText(id, "message is required.", true);
+    const topic = (readPrinterConfig().ntfy_topic || "").trim();
+    if (!topic) {
+      return toolText(
+        id,
+        "No ntfy_topic set in printer-config.json. Add a private topic (e.g. a random string) there and subscribe to it in the ntfy app first.",
+        true
+      );
+    }
+    const headers = { "Content-Type": "text/plain; charset=utf-8" };
+    if (args.title) headers["X-Title"] = String(args.title).replace(/[\r\n]/g, " ");
+    if (args.priority) headers["X-Priority"] = String(args.priority);
+    const body = Buffer.from(message, "utf8");
+    headers["Content-Length"] = body.length;
+    const req = https.request(
+      "https://ntfy.sh/" + encodeURIComponent(topic),
+      { method: "POST", headers, timeout: 15000 },
+      (res) => {
+        let buf = "";
+        res.on("data", (c) => (buf += c));
+        res.on("end", () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            toolText(id, `Push sent to ntfy topic "${topic}".`);
+          } else {
+            toolText(id, `ntfy returned HTTP ${res.statusCode}: ${buf.slice(0, 300)}`, true);
+          }
+        });
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("request timed out")));
+    req.on("error", (e) => toolText(id, `Could not reach ntfy.sh: ${e.message}`, true));
+    req.write(body);
+    req.end();
     return;
   }
 
