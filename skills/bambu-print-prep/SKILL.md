@@ -66,6 +66,24 @@ The script lives at `scripts/model_tools.py` under this skill's directory. Trans
 
 6. **Confirm.** Tell the user what was loaded, which part(s) it corresponds to, the dimensions, and any dialog they need to click in Bambu Studio. Remind them to check orientation/supports before slicing — part orientation in the source file is not always print-ready.
 
+## Project name and description
+
+Bambu Studio's **Project** tab (Project Name, Description, Pictures) reads from metadata stored
+inside the `.3mf` itself. A file with no `Title` shows as "Untitled" — that is why plain extracted
+plates look unnamed.
+
+- `get_project_info` — read the current name, description, designer, license and embedded pictures.
+- `set_project_info` — set name/description/pictures. Everything else in the archive (geometry,
+  plates, slice settings, existing pictures) is copied through untouched. Studio must **reopen** the
+  file to show the change; it does not refresh a file already open.
+- `extract --out file.3mf` now writes `Title` and a `Description` summarising the parts and scale,
+  and carries `Designer`/`Copyright`/`LicenseTerms` over from the source file. Override with
+  `--name` / `--description`.
+
+Do not pass `designer` when editing someone else's model — leave the existing credit alone unless
+the user says it is their own design. These tools only write local file metadata; nothing is
+uploaded or published.
+
 ## Caveats
 
 - Volumes assume closed meshes; treat as rough. Sizes are axis-aligned bounding boxes in the file's placed orientation.

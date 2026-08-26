@@ -13,6 +13,7 @@ inspect uses only the standard library. render needs numpy + matplotlib
 (pip install numpy matplotlib --break-system-packages).
 """
 import argparse
+import datetime
 import json
 import math
 import os
@@ -376,8 +377,38 @@ def _esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
 
 
-def _write_3mf(parts, offsets, path):
-    """Write a multi-object 3MF; each part is its own object, positioned by its offset."""
+# 3MF core spec metadata names Bambu Studio reads for its Project panel. Title shows as
+# the project name, Description as the body; Designer/Copyright/LicenseTerms carry the
+# original author's attribution through an extract instead of silently dropping it.
+def _read_3mf_meta(path):
+    """Pull the <metadata> block out of a 3MF's root model document."""
+    try:
+        z = zipfile.ZipFile(path)
+    except Exception:
+        return {}
+    name = "3D/3dmodel.model"
+    if name not in z.namelist():
+        cand = [n for n in z.namelist() if n.endswith(".model")]
+        if not cand:
+            return {}
+        name = cand[0]
+    try:
+        root = ET.fromstring(z.read(name))
+    except Exception:
+        return {}
+    out = {}
+    for el in root:
+        if _local(el.tag) == "metadata" and el.get("name") and el.text:
+            out[el.get("name")] = el.text
+    return out
+
+
+def _write_3mf(parts, offsets, path, meta=None):
+    """Write a multi-object 3MF; each part is its own object, positioned by its offset.
+
+    `meta` becomes the project metadata Bambu Studio shows in its Project panel.
+    Per the 3MF core spec these elements must precede <resources>.
+    """
     obj_xml, item_xml = [], []
     for i, (p, (ox, oy, oz)) in enumerate(zip(parts, offsets)):
         oid = i + 1
@@ -388,10 +419,16 @@ def _write_3mf(parts, offsets, path):
             % (oid, _esc(p["name"] or "part-%d" % oid), vs, ts)
         )
         item_xml.append('<item objectid="%d" transform="1 0 0 0 1 0 0 0 1 %.4f %.4f %.4f"/>' % (oid, ox, oy, oz))
+    meta_xml = "".join(
+        '<metadata name="%s">%s</metadata>' % (k, _esc(str(v)))
+        for k, v in (meta or {}).items()
+        if v not in (None, "")
+    )
     model = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
-        "<resources>%s</resources><build>%s</build></model>" % ("".join(obj_xml), "".join(item_xml))
+        "%s<resources>%s</resources><build>%s</build></model>"
+        % (meta_xml, "".join(obj_xml), "".join(item_xml))
     )
     ct = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -771,6 +808,106 @@ def _flat_report(p, nfo):
     return "lay-flat %r: %s" % (p["name"], "; ".join(bits))
 
 
+def _3mf_pictures(path):
+    """Model/profile pictures already embedded in a 3MF (what Studio's Project panel shows)."""
+    try:
+        names = zipfile.ZipFile(path).namelist()
+    except Exception:
+        return []
+    return [n for n in names if n.startswith("Auxiliaries/") and not n.startswith("Auxiliaries/.thumbnails")]
+
+
+def _set_3mf_meta(src, dst, updates, pictures=None):
+    """Rewrite project metadata in a 3MF, copying every other archive entry through.
+
+    The root model document is edited as text rather than reparsed, so Bambu's
+    namespace declarations, requiredextensions attribute and element order all
+    survive — reserializing with ElementTree would rewrite them.
+    """
+    zin = zipfile.ZipFile(src)
+    names = zin.namelist()
+    root = "3D/3dmodel.model"
+    if root not in names:
+        cand = [n for n in names if n.endswith(".model")]
+        if not cand:
+            raise SystemExit("No .model document found inside this 3MF")
+        root = cand[0]
+    xml = zin.read(root).decode("utf-8", "replace")
+
+    for key, val in (updates or {}).items():
+        if val is None:
+            continue
+        block = '<metadata name="%s">%s</metadata>' % (key, _esc(str(val)).replace(">", "&gt;"))
+        pat = re.compile(r'<metadata\s+name="%s"\s*(?:/>|>.*?</metadata>)' % re.escape(key), re.S)
+        if pat.search(xml):
+            xml = pat.sub(lambda m: block, xml, count=1)  # lambda: val may contain backslashes
+        else:
+            m = re.search(r"<model\b[^>]*>", xml)
+            if not m:
+                raise SystemExit("Malformed 3MF: no <model> element in %s" % root)
+            xml = xml[: m.end()] + block + xml[m.end() :]
+
+    added = []
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            if item.filename == root:
+                zout.writestr(item.filename, xml.encode("utf-8"))
+            else:
+                zout.writestr(item, zin.read(item.filename))
+        for pic in pictures or []:
+            if not os.path.isfile(pic):
+                raise SystemExit("Picture not found: %s" % pic)
+            arc = "Auxiliaries/Model Pictures/" + os.path.basename(pic)
+            if arc in names:
+                continue
+            with open(pic, "rb") as f:
+                zout.writestr(arc, f.read())
+            added.append(arc)
+    return added
+
+
+def cmd_project(args):
+    """Read or set the Project-panel fields (name, description, pictures) of a 3MF."""
+    if os.path.splitext(args.file)[1].lower() != ".3mf":
+        raise SystemExit("Project metadata lives in .3mf files only; %r is not one" % args.file)
+    cur = _read_3mf_meta(args.file)
+    updates = {}
+    if args.set_name is not None:
+        updates["Title"] = args.set_name
+    if args.set_description is not None:
+        updates["Description"] = args.set_description
+    if args.set_designer is not None:
+        updates["Designer"] = args.set_designer
+    pics = args.add_picture or []
+
+    if not updates and not pics:
+        print(json.dumps({
+            "file": args.file,
+            "project_name": cur.get("Title", ""),
+            "description": cur.get("Description", ""),
+            "designer": cur.get("Designer", ""),
+            "license": cur.get("License") or cur.get("LicenseTerms", ""),
+            "pictures": _3mf_pictures(args.file),
+            "all_metadata": cur,
+        }, indent=2))
+        return
+
+    out = args.out or args.file
+    tmp = out + ".tmp-project"
+    try:
+        added = _set_3mf_meta(args.file, tmp, updates, pics)
+        os.replace(tmp, out)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    bits = ["%s -> %r" % (k, v) for k, v in updates.items()]
+    if added:
+        bits.append("added %d picture(s): %s" % (len(added), ", ".join(added)))
+    print("Updated %s: %s" % (out, "; ".join(bits)))
+    if out == args.file:
+        print("(edited in place — every other archive entry copied through unchanged)")
+
+
 def cmd_extract(args):
     parts = select_parts(load_parts(args.file), args.parts)
     if not parts:
@@ -788,7 +925,21 @@ def cmd_extract(args):
     if ext == ".3mf":
         norm = [_normalize_part(p, scale) for p in parts]
         offsets, (fw, fd) = _arrange(norm, float(args.bed), float(args.gap))
-        _write_3mf(norm, offsets, args.out)
+        # Carry the source project's identity and attribution onto the new plate so it
+        # opens as a named project in Studio instead of "Untitled".
+        src = _read_3mf_meta(args.file) if os.path.splitext(args.file)[1].lower() == ".3mf" else {}
+        meta = {
+            "Application": "bambu-studio-connector",
+            "CreationDate": datetime.date.today().isoformat(),
+            "Title": getattr(args, "name", None) or os.path.splitext(os.path.basename(args.out))[0],
+            "Description": getattr(args, "description", None)
+            or "Parts: %s. Extracted from %s at %d%% scale%s."
+            % (names, os.path.basename(args.file), scale * 100, ", laid flat" if args.lay_flat else ""),
+            "Designer": src.get("Designer", ""),
+            "Copyright": src.get("Copyright", ""),
+            "LicenseTerms": src.get("License") or src.get("LicenseTerms", ""),
+        }
+        _write_3mf(norm, offsets, args.out, meta)
         warn = " WARNING: layout exceeds bed!" if fw > float(args.bed) or fd > float(args.bed) else ""
         print(
             "Wrote %s: %d part(s) [%s] at %d%% scale, arranged in a %.0f x %.0f mm layout (bed %s mm, %s mm gaps).%s"
@@ -815,16 +966,31 @@ def cmd_extract(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, fn, needs_out in (("inspect", cmd_inspect, False), ("render", cmd_render, True), ("extract", cmd_extract, True)):
+    for name, fn, needs_out in (
+        ("inspect", cmd_inspect, False),
+        ("render", cmd_render, True),
+        ("extract", cmd_extract, True),
+        ("project", cmd_project, False),
+    ):
         sp = sub.add_parser(name)
         sp.add_argument("file")
-        sp.add_argument("--parts", default=None, help="comma-separated indices and/or name substrings")
+        if name != "project":
+            sp.add_argument("--parts", default=None, help="comma-separated indices and/or name substrings")
         if needs_out:
             sp.add_argument("--out", required=True)
+        if name == "project":
+            sp.add_argument("--out", default=None, help="write to a new .3mf instead of editing in place")
+            sp.add_argument("--set-name", dest="set_name", default=None, help="Project Name shown in Studio")
+            sp.add_argument("--set-description", dest="set_description", default=None, help="Description body")
+            sp.add_argument("--set-designer", dest="set_designer", default=None, help="Designer/author credit")
+            sp.add_argument("--add-picture", dest="add_picture", action="append", default=None,
+                            help="image file to embed as a model picture (repeatable)")
         if name == "extract":
             sp.add_argument("--scale", default="1.0", help="uniform scale factor, e.g. 0.2 for 20%%")
             sp.add_argument("--bed", default="380", help="usable bed width/depth in mm for .3mf arrangement")
             sp.add_argument("--gap", default="8", help="spacing between arranged parts in mm")
+            sp.add_argument("--name", default=None, help="Project Name for the written .3mf")
+            sp.add_argument("--description", default=None, help="Project description for the written .3mf")
             sp.add_argument("--lay-flat", dest="lay_flat", action="store_true", help="rotate each part onto its best printable resting face (most bed contact, least overhang, lowest center of mass) before arranging")
         sp.set_defaults(fn=fn)
     args = ap.parse_args()
