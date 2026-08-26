@@ -411,52 +411,305 @@ def _write_3mf(parts, offsets, path):
         z.writestr("3D/3dmodel.model", model)
 
 
-def _all_axis_rotations():
-    import itertools
+def _tri_geom(V, T):
+    """Per-triangle unit normal and area, dropping degenerate slivers.
 
-    mats = []
-    for perm in itertools.permutations(range(3)):
-        # permutation parity
-        parity = 1
-        pl = list(perm)
-        for i in range(3):
-            for j in range(i + 1, 3):
-                if pl[i] > pl[j]:
-                    parity = -parity
-        for signs in itertools.product((1, -1), repeat=3):
-            if parity * signs[0] * signs[1] * signs[2] != 1:
-                continue  # keep proper rotations only (no mirroring)
-            M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-            for row in range(3):
-                M[row][perm[row]] = signs[row]
-            mats.append(M)
-    return mats
+    Returns (tris, norms, areas) as parallel lists so callers can index across them.
+    Winding is assumed CCW-outward (both STL and 3MF specify that), so normals
+    point out of the solid.
+    """
+    tris, norms, areas = [], [], []
+    for a, b, c in T:
+        ax, ay, az = V[a]
+        bx, by, bz = V[b]
+        cx, cy, cz = V[c]
+        ux, uy, uz = bx - ax, by - ay, bz - az
+        vx, vy, vz = cx - ax, cy - ay, cz - az
+        nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        m = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if m < 1e-12:
+            continue  # zero-area triangle carries no orientation information
+        tris.append((a, b, c))
+        norms.append((nx / m, ny / m, nz / m))
+        areas.append(m / 2.0)
+    return tris, norms, areas
 
 
-_ROTS = _all_axis_rotations()
+def _centroid(V, T):
+    """Center of mass assuming uniform density: volume-weighted for closed meshes,
+    area-weighted for open shells, bbox-average as a last resort."""
+    vol = 0.0
+    sx = sy = sz = 0.0
+    for a, b, c in T:
+        ax, ay, az = V[a]
+        bx, by, bz = V[b]
+        cx, cy, cz = V[c]
+        d = ax * (by * cz - bz * cy) + bx * (cy * az - cz * ay) + cx * (ay * bz - az * by)
+        vol += d
+        sx += d * (ax + bx + cx)
+        sy += d * (ay + by + cy)
+        sz += d * (az + bz + cz)
+    if abs(vol) > 1e-9:
+        s = 1.0 / (4.0 * vol)
+        return (sx * s, sy * s, sz * s)
+    tot = 0.0
+    sx = sy = sz = 0.0
+    shell_tris, _, shell_areas = _tri_geom(V, T)
+    for (a, b, c), area in zip(shell_tris, shell_areas):
+        ax, ay, az = V[a]
+        bx, by, bz = V[b]
+        cx, cy, cz = V[c]
+        tot += area
+        sx += area * (ax + bx + cx) / 3.0
+        sy += area * (ay + by + cy) / 3.0
+        sz += area * (az + bz + cz) / 3.0
+    if tot > 1e-12:
+        return (sx / tot, sy / tot, sz / tot)
+    n = max(1, len(V))
+    return (sum(v[0] for v in V) / n, sum(v[1] for v in V) / n, sum(v[2] for v in V) / n)
+
+
+_AXIS_DOWNS = [(1.0, 0, 0), (-1.0, 0, 0), (0, 1.0, 0), (0, -1.0, 0), (0, 0, 1.0), (0, 0, -1.0)]
+
+
+def _candidate_downs(norms, areas, limit):
+    """Directions worth testing as "this face goes against the bed".
+
+    A part at rest sits on one of its own faces, so the candidates are the mesh's
+    face normals, merged into area-weighted buckets and ranked by total area. The
+    six axis directions are always included so boxy parts keep a sane fallback.
+    """
+    buckets = {}
+    q = 24  # ~2.4 deg per bucket step
+    for (nx, ny, nz), area in zip(norms, areas):
+        key = (round(nx * q), round(ny * q), round(nz * q))
+        b = buckets.get(key)
+        if b is None:
+            buckets[key] = [nx * area, ny * area, nz * area, area]
+        else:
+            b[0] += nx * area
+            b[1] += ny * area
+            b[2] += nz * area
+            b[3] += area
+    out = list(_AXIS_DOWNS)
+    for b in sorted(buckets.values(), key=lambda b: -b[3])[:limit]:
+        m = math.sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2])
+        if m < 1e-12:
+            continue
+        d = (b[0] / m, b[1] / m, b[2] / m)
+        if not any(d[0] * o[0] + d[1] * o[1] + d[2] * o[2] > 0.9995 for o in out):
+            out.append(d)
+    return out
+
+
+def _rot_to_down(d):
+    """Rotation matrix taking unit vector d onto (0, 0, -1) — that face ends up on the bed."""
+    dx, dy, dz = d
+    c = -dz  # cos of the angle between d and straight down
+    if c > 1 - 1e-9:
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    if c < -1 + 1e-9:
+        return [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]  # 180 deg about X
+    s = math.sqrt(dx * dx + dy * dy)  # |d x (0,0,-1)| = sin of that angle
+    ax, ay = -dy / s, dx / s  # rotation axis (unit, lies in the XY plane)
+    k = 1.0 - c
+    return [
+        [c + k * ax * ax, k * ax * ay, s * ay],
+        [k * ax * ay, c + k * ay * ay, -s * ax],
+        [-s * ay, s * ax, c],
+    ]
+
+
+def _hull2d(pts):
+    """Convex hull of 2D points, counter-clockwise (monotone chain)."""
+    P = sorted(set(pts))
+    if len(P) < 3:
+        return P
+
+    def half(seq):
+        out = []
+        for p in seq:
+            while len(out) >= 2:
+                (ox, oy), (bx, by) = out[-2], out[-1]
+                if (bx - ox) * (p[1] - oy) - (by - oy) * (p[0] - ox) > 1e-12:
+                    break
+                out.pop()
+            out.append(p)
+        return out
+
+    lower, upper = half(P), half(reversed(P))
+    return lower[:-1] + upper[:-1]
+
+
+def _inside_hull2d(pt, hull, margin=0.0):
+    """True if pt is inside a CCW convex hull, requiring `margin` mm of clearance."""
+    if len(hull) < 3:
+        return False
+    x, y = pt
+    n = len(hull)
+    for i in range(n):
+        ax, ay = hull[i]
+        bx, by = hull[(i + 1) % n]
+        ex, ey = bx - ax, by - ay
+        elen = math.sqrt(ex * ex + ey * ey)
+        if elen < 1e-12:
+            continue
+        # signed distance from the edge, positive on the interior side of a CCW hull
+        if (ex * (y - ay) - ey * (x - ax)) / elen < margin:
+            return False
+    return True
+
+
+def _min_bbox_spin(pts):
+    """Angle (radians) to rotate about Z so the footprint's bounding box is smallest.
+
+    Only affects how tightly _arrange can pack parts; it never changes which face
+    is on the bed. Exact via rotating calipers: an optimal box shares a hull edge.
+    """
+    hull = _hull2d([(round(x, 4), round(y, 4)) for x, y in pts])
+    if len(hull) < 3:
+        return 0.0
+    best_area, best_ang = None, 0.0
+    for i in range(len(hull)):
+        ax, ay = hull[i]
+        bx, by = hull[(i + 1) % len(hull)]
+        ang = -math.atan2(by - ay, bx - ax)
+        ca, sa = math.cos(ang), math.sin(ang)
+        xs = [x * ca - y * sa for x, y in hull]
+        ys = [x * sa + y * ca for x, y in hull]
+        area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+        if best_area is None or area < best_area - 1e-9:
+            best_area, best_ang = area, ang
+    return best_ang
+
+
+# Relative weights for the orientation score. Contact area and overhang dominate
+# print success; the center-of-mass term is what distinguishes a part from its
+# 180-degree flip (both have identical height and identical bounding box).
+_W_CONTACT, _W_OVERHANG, _W_COM, _W_HEIGHT = 1.0, 0.8, 0.55, 0.25
 
 
 def _lay_flat(p):
-    """Rotate the part (axis-aligned 90-degree steps) to minimize height, then maximize footprint."""
-    best_key, best_verts = None, p["verts"]
-    for M in _ROTS:
-        V = [
-            (
-                M[0][0] * x + M[0][1] * y + M[0][2] * z,
-                M[1][0] * x + M[1][1] * y + M[1][2] * z,
-                M[2][0] * x + M[2][1] * y + M[2][2] * z,
-            )
-            for x, y, z in p["verts"]
-        ]
-        xs = [v[0] for v in V]
-        ys = [v[1] for v in V]
-        zs = [v[2] for v in V]
-        key = (round(max(zs) - min(zs), 3), -round((max(xs) - min(xs)) * (max(ys) - min(ys)), 3))
-        if best_key is None or key < best_key:
-            best_key, best_verts = key, V
+    """Rotate the part so its best real face rests on the bed.
+
+    Returns (part, info). Candidates are the mesh's own face normals rather than
+    24 axis-aligned rotations, and each is scored on bed contact area, how much
+    downward-facing area would need support, how low the center of mass sits, and
+    overall height. Orientations whose center of mass falls outside the contact
+    patch are treated as tipping over and only used if nothing else qualifies.
+    """
+    V = p["verts"]
+    tris, norms, areas = _tri_geom(V, p["tris"])
+    info = {"contact_mm2": 0.0, "height_mm": 0.0, "overhang_mm2": 0.0, "com_frac": 0.0,
+            "stable": False, "tilted": False, "spin_deg": 0.0, "candidates": 0}
+    if not tris or not V:
+        return dict(p), info
+
+    # A closed mesh wound inside-out has negative signed volume; its normals all point
+    # into the solid, which would hide every downward face. Exporters do ship these,
+    # so flip rather than give up. (Open shells sum to ~0 and are left alone.)
+    sv = 0.0
+    for a, b, c in tris:
+        ax, ay, az = V[a]
+        bx, by, bz = V[b]
+        cx, cy, cz = V[c]
+        sv += ax * (by * cz - bz * cy) + bx * (cy * az - cz * ay) + cx * (ay * bz - az * by)
+    if sv < 0:
+        norms = [(-n[0], -n[1], -n[2]) for n in norms]
+        info["reversed_winding"] = True
+
+    total_area = sum(areas)
+    com = _centroid(V, p["tris"])
+    limit = 28 if len(tris) <= 150000 else 10  # keep the sweep affordable on dense meshes
+    downs = _candidate_downs(norms, areas, limit)
+    info["candidates"] = len(downs)
+
+    scored = []
+    for d in downs:
+        R = _rot_to_down(d)
+        r0, r1, r2 = R
+        zs = [r2[0] * x + r2[1] * y + r2[2] * z for x, y, z in V]
+        zmin, zmax = min(zs), max(zs)
+        height = zmax - zmin
+        if height < 1e-9:
+            continue
+        band = zmin + max(0.05, 0.0015 * height)  # a real bed touches within a layer or so
+
+        contact = 0.0
+        overhang = 0.0
+        touch = []
+        for i, (a, b, c) in enumerate(tris):
+            nz = r2[0] * norms[i][0] + r2[1] * norms[i][1] + r2[2] * norms[i][2]
+            if nz > -0.7071:  # not facing downward enough to matter
+                continue
+            za, zb, zc = zs[a], zs[b], zs[c]
+            if max(za, zb, zc) <= band and nz <= -0.9:
+                contact += areas[i]
+                touch.extend((a, b, c))
+            elif min(za, zb, zc) > band:
+                overhang += areas[i]  # steep downward face off the bed: needs support
+
+        hull = _hull2d(
+            [
+                (round(r0[0] * V[k][0] + r0[1] * V[k][1] + r0[2] * V[k][2], 4),
+                 round(r1[0] * V[k][0] + r1[1] * V[k][1] + r1[2] * V[k][2], 4))
+                for k in set(touch)
+            ]
+        )
+        com_xy = (
+            r0[0] * com[0] + r0[1] * com[1] + r0[2] * com[2],
+            r1[0] * com[0] + r1[1] * com[1] + r1[2] * com[2],
+        )
+        com_z = r2[0] * com[0] + r2[1] * com[1] + r2[2] * com[2]
+        scored.append({
+            "R": R, "d": d, "contact": contact, "overhang": overhang, "height": height,
+            "com_frac": min(1.0, max(0.0, (com_z - zmin) / height)),
+            "stable": contact > 0 and _inside_hull2d(com_xy, hull),
+        })
+
+    if not scored:
+        return dict(p), info
+
+    pool = [s for s in scored if s["stable"]] or scored
+    max_contact = max(s["contact"] for s in pool) or 1.0
+    max_height = max(s["height"] for s in pool) or 1.0
+    for s in pool:
+        s["score"] = (
+            _W_CONTACT * (s["contact"] / max_contact)
+            + _W_OVERHANG * (1.0 - (s["overhang"] / total_area if total_area else 0.0))
+            + _W_COM * (1.0 - s["com_frac"])
+            + _W_HEIGHT * (1.0 - s["height"] / max_height)
+        )
+    best = max(pool, key=lambda s: s["score"])
+
+    R = best["R"]
+    W = [
+        (
+            R[0][0] * x + R[0][1] * y + R[0][2] * z,
+            R[1][0] * x + R[1][1] * y + R[1][2] * z,
+            R[2][0] * x + R[2][1] * y + R[2][2] * z,
+        )
+        for x, y, z in V
+    ]
+    spin = _min_bbox_spin([(v[0], v[1]) for v in W])
+    if abs(spin) > 1e-6:
+        ca, sa = math.cos(spin), math.sin(spin)
+        W = [(x * ca - y * sa, x * sa + y * ca, z) for x, y, z in W]
+
+    dx, dy, dz = best["d"]
+    info.update(
+        contact_mm2=best["contact"],
+        height_mm=best["height"],
+        overhang_mm2=best["overhang"],
+        com_frac=best["com_frac"],
+        stable=best["stable"],
+        # a non-axis-aligned resting face is something the old 90-degree search could never find
+        tilted=max(abs(dx), abs(dy), abs(dz)) < 0.999,
+        spin_deg=math.degrees(spin),
+    )
     p = dict(p)
-    p["verts"] = best_verts
-    return p
+    p["verts"] = W
+    return p, info
 
 
 def _normalize_part(p, scale):
@@ -500,6 +753,24 @@ def _arrange(parts, bed, gap):
     return offsets, footprint
 
 
+def _flat_report(p, nfo):
+    """One human-checkable line per part, so a bad orientation is visible before slicing."""
+    if not nfo.get("contact_mm2"):
+        return "lay-flat %r: no resting face found — left as-is" % (p["name"],)
+    bits = [
+        "%.0f mm2 on the bed" % nfo["contact_mm2"],
+        "%.1f mm tall" % nfo["height_mm"],
+        "center of mass at %.0f%% of height" % (100 * nfo["com_frac"]),
+    ]
+    if nfo["overhang_mm2"] > 0.5:
+        bits.append("%.0f mm2 needs support" % nfo["overhang_mm2"])
+    if nfo["tilted"]:
+        bits.append("rests on an angled face")
+    if not nfo["stable"]:
+        bits.append("WARNING: center of mass overhangs the contact patch — may tip")
+    return "lay-flat %r: %s" % (p["name"], "; ".join(bits))
+
+
 def cmd_extract(args):
     parts = select_parts(load_parts(args.file), args.parts)
     if not parts:
@@ -508,9 +779,13 @@ def cmd_extract(args):
     ext = os.path.splitext(args.out)[1].lower()
     names = ", ".join(p["name"] for p in parts)
 
+    if args.lay_flat:
+        laid = [_lay_flat(p) for p in parts]
+        parts = [q for q, _ in laid]
+        for q, nfo in laid:
+            print(_flat_report(q, nfo))
+
     if ext == ".3mf":
-        if args.lay_flat:
-            parts = [_lay_flat(p) for p in parts]
         norm = [_normalize_part(p, scale) for p in parts]
         offsets, (fw, fd) = _arrange(norm, float(args.bed), float(args.gap))
         _write_3mf(norm, offsets, args.out)
@@ -550,7 +825,7 @@ def main():
             sp.add_argument("--scale", default="1.0", help="uniform scale factor, e.g. 0.2 for 20%%")
             sp.add_argument("--bed", default="380", help="usable bed width/depth in mm for .3mf arrangement")
             sp.add_argument("--gap", default="8", help="spacing between arranged parts in mm")
-            sp.add_argument("--lay-flat", dest="lay_flat", action="store_true", help="rotate each part (90-degree steps) to lie flat before arranging (.3mf only)")
+            sp.add_argument("--lay-flat", dest="lay_flat", action="store_true", help="rotate each part onto its best printable resting face (most bed contact, least overhang, lowest center of mass) before arranging")
         sp.set_defaults(fn=fn)
     args = ap.parse_args()
     args.fn(args)

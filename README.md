@@ -50,7 +50,7 @@ Manual: create `printer-config.json` in `~/.bambu-studio-connector/` (or a Cowor
 - The Bambu account sign-in and sync use Bambu's cloud API as documented by the community ([OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI)); Bambu has no official public API and could change it at any time.
 - Camera snapshots and status reads work in cloud mode on current firmware, but Bambu's firmware updates have repeatedly tightened third-party access — behavior varies by model and firmware.
 - Plain 3MF files exported by the prep skill contain geometry only; Bambu Studio will note they're "not from Bambu Lab" and apply your current presets. Expected.
-- Lay-flat uses 90° axis-aligned rotations — great for boxy parts, not a general optimal-orientation solver.
+- Lay-flat picks a resting face from the mesh's own faces, scoring bed contact area, support-needing overhang, center-of-mass height, and part height. It handles angled faces and won't land a part upside down, but it's a heuristic, not a true optimal-orientation solver: it doesn't reason about part strength, layer direction, or where seams land. It reports contact area and a tip warning per part — check those.
 - Always check orientation and supports in Bambu Studio before slicing.
 
 ## Credits

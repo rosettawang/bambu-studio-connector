@@ -53,7 +53,8 @@ The script lives at `scripts/model_tools.py` under this skill's directory. Trans
    `--parts` accepts indices and/or name substrings, comma-separated. Options:
    - `--scale 0.2` — uniform scaling (20%)
    - `--out file.3mf` — multi-object output: each part stays a separate object, auto-arranged on the plate with `--gap` spacing within `--bed` mm (default 380). Prefer this when extracting several parts.
-   - `--lay-flat` — rotate each part in 90° steps to its flattest orientation before arranging (3MF output only). Use it whenever source parts stand upright.
+   - `--lay-flat` — rotate each part onto its best printable resting face before arranging (works for both `.3mf` and `.stl` output). Candidates are the mesh's own faces, scored on bed contact area, downward-facing area that would need support, how low the center of mass sits, and height; it also spins each part about Z for tighter packing. Use it whenever source parts stand upright or arrive at an odd angle.
+     It prints one line per part — bed contact, height, center-of-mass height, support area. **Read those lines back to the user** and flag anything suspicious: very little contact area on a big part, or a `may tip` warning, usually means the part has no good flat face and wants manual orientation in Studio.
    - `--out file.stl` — single merged STL, recentered, bottom at z=0. Use for one part.
 
    Studio will note a plain 3MF is "not from Bambu Lab, geometry data only" — expected and harmless (no print settings embedded).
