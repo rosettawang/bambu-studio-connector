@@ -322,7 +322,75 @@ const TOOLS = [
       required: ["message"],
     },
   },
+  {
+    name: "get_project_info",
+    description:
+      "Read the Project panel fields of a .3mf project file: project name (Title), description, designer, license, " +
+      "and the model pictures embedded in it. Call this before set_project_info so existing values and the original " +
+      "author's attribution are known rather than overwritten blindly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_path: { type: "string", description: "Absolute Mac path to a .3mf project file" },
+      },
+      required: ["file_path"],
+    },
+  },
+  {
+    name: "set_project_info",
+    description:
+      "Fill in the Project panel of a .3mf project file: project name, description, designer credit, and model pictures. " +
+      "Bambu Studio reads these from inside the file, so a project that showed as 'Untitled' gets a real name. " +
+      "Everything else in the archive — geometry, plates, slice settings, existing pictures — is copied through unchanged. " +
+      "Edits the file in place unless out_path is given; Bambu Studio must reopen the file to show the change. " +
+      "This only writes local file metadata: it does not upload, publish, or share anything to MakerWorld or the Bambu cloud.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_path: { type: "string", description: "Absolute Mac path to the .3mf project file to edit" },
+        project_name: { type: "string", description: "Project Name shown in Studio's Project panel (3MF 'Title')" },
+        description: { type: "string", description: "Description body text" },
+        designer: {
+          type: "string",
+          description:
+            "Designer/author credit. Leave unset to keep the existing credit — do not overwrite another creator's " +
+            "name on a model they made.",
+        },
+        pictures: {
+          type: "array",
+          items: { type: "string" },
+          description: "Absolute paths to image files (jpg/png/webp) to embed as model pictures",
+        },
+        out_path: {
+          type: "string",
+          description: "Write a new .3mf here instead of editing file_path in place",
+        },
+      },
+      required: ["file_path"],
+    },
+  },
 ];
+
+/* The prep skill's model_tools.py does the 3MF work (Node has no stdlib zip reader).
+ * server/ sits at the plugin root, so the skill is one level up. */
+const MODEL_TOOLS = path.join(__dirname, "..", "skills", "bambu-print-prep", "scripts", "model_tools.py");
+
+function runModelTools(argv, cb) {
+  if (!fs.existsSync(MODEL_TOOLS)) {
+    return cb(new Error(`model_tools.py not found at ${MODEL_TOOLS} — is the plugin installed intact?`));
+  }
+  execFile("python3", [MODEL_TOOLS, ...argv], { maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) return cb(new Error(String(stderr || stdout || err.message).trim()));
+    cb(null, stdout);
+  });
+}
+
+function checkThreeMf(f) {
+  if (typeof f !== "string" || !path.isAbsolute(f)) return `file_path must be an absolute Mac path, got: ${f}`;
+  if (!fs.existsSync(f)) return `File not found on this Mac: ${f}`;
+  if (path.extname(f).toLowerCase() !== ".3mf") return `Project info lives in .3mf project files; this is not one: ${f}`;
+  return null;
+}
 
 function send(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
@@ -557,6 +625,41 @@ function handleToolCall(id, params) {
     return;
   }
 
+  if (name === "get_project_info") {
+    const bad = checkThreeMf(args.file_path);
+    if (bad) return toolText(id, bad, true);
+    return runModelTools(["project", args.file_path], (err, out) => {
+      if (err) return toolText(id, `Could not read project info: ${err.message}`, true);
+      toolText(id, out.trim());
+    });
+  }
+
+  if (name === "set_project_info") {
+    const bad = checkThreeMf(args.file_path);
+    if (bad) return toolText(id, bad, true);
+    const argv = ["project", args.file_path];
+    if (typeof args.project_name === "string") argv.push("--set-name", args.project_name);
+    if (typeof args.description === "string") argv.push("--set-description", args.description);
+    if (typeof args.designer === "string") argv.push("--set-designer", args.designer);
+    const pics = Array.isArray(args.pictures) ? args.pictures : [];
+    for (const p of pics) {
+      if (typeof p !== "string" || !path.isAbsolute(p)) return toolText(id, `Picture path must be absolute: ${p}`, true);
+      if (!fs.existsSync(p)) return toolText(id, `Picture not found on this Mac: ${p}`, true);
+      argv.push("--add-picture", p);
+    }
+    if (argv.length === 2) {
+      return toolText(id, "Nothing to set — pass at least one of project_name, description, designer, pictures.", true);
+    }
+    if (typeof args.out_path === "string") {
+      if (!path.isAbsolute(args.out_path)) return toolText(id, `out_path must be absolute: ${args.out_path}`, true);
+      argv.push("--out", args.out_path);
+    }
+    return runModelTools(argv, (err, out) => {
+      if (err) return toolText(id, `Could not set project info: ${err.message}`, true);
+      toolText(id, `${out.trim()}\nReopen the file in Bambu Studio to see the Project panel update.`);
+    });
+  }
+
   return toolText(id, `Unknown tool: ${name}`, true);
 }
 
@@ -572,7 +675,7 @@ function handleMessage(line) {
     reply(id, {
       protocolVersion: (params && params.protocolVersion) || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "bambu-studio-connector", version: "0.1.0" },
+      serverInfo: { name: "bambu-studio-connector", version: "0.6.0" },
     });
   } else if (method === "ping") {
     reply(id, {});
