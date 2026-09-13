@@ -1,0 +1,372 @@
+<title>Bambu Connector Wiring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --paper:#E9ECE6; --surface:#FBFCFA; --sunk:#E2E6DF;
+    --ink:#171B1B; --ink-2:#3E4745; --muted:#6C7674;
+    --line:#CDD3CC; --line-2:#B8C0B8;
+    --accent:#0E6E78; --accent-soft:#D9E8E9;
+    --halt:#B04A23;
+    --sans:'Archivo','Helvetica Neue',Arial,sans-serif;
+    --serif:'Newsreader',Georgia,'Times New Roman',serif;
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#121616; --surface:#1A1F1F; --sunk:#171C1C;
+      --ink:#E4E9E5; --ink-2:#C2CAC6; --muted:#8E9996;
+      --line:#2C3433; --line-2:#3A4442;
+      --accent:#57BFC6; --accent-soft:#11302F;
+      --halt:#E08256;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#121616; --surface:#1A1F1F; --sunk:#171C1C;
+    --ink:#E4E9E5; --ink-2:#C2CAC6; --muted:#8E9996;
+    --line:#2C3433; --line-2:#3A4442;
+    --accent:#57BFC6; --accent-soft:#11302F;
+    --halt:#E08256;
+  }
+
+  body{background:var(--paper);color:var(--ink);font-family:var(--serif);
+       font-size:17px;line-height:1.62;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1060px;margin:0 auto;padding-inline:24px;padding-block:56px 72px}
+  .col{max-width:66ch;margin-inline:auto}
+  h1,h2,h3{font-family:var(--sans);text-wrap:balance;margin:0}
+  p{margin:0}
+  a{color:var(--accent)}
+  code,.mono{font-family:var(--mono);font-size:.86em}
+
+  .eyebrow{font-family:var(--sans);font-size:11.5px;font-weight:600;letter-spacing:.14em;
+           text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+  h1{font-size:clamp(34px,6vw,52px);font-weight:700;letter-spacing:-.022em;line-height:1.04}
+  .deck{font-size:20px;line-height:1.5;color:var(--ink-2);margin-top:18px}
+  .deck em{font-style:normal;box-shadow:inset 0 -.42em 0 var(--accent-soft)}
+
+  .spec{display:flex;flex-wrap:wrap;gap:10px 0;margin-top:34px;
+        border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2);padding-block:14px}
+  .spec div{flex:1 1 150px;padding-right:20px}
+  .spec b{display:block;font-family:var(--sans);font-weight:600;font-size:21px;
+          letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .spec span{font-family:var(--sans);font-size:11.5px;letter-spacing:.05em;
+             text-transform:uppercase;color:var(--muted)}
+  .spec .stop b{color:var(--halt)}
+
+  section{margin-top:54px}
+  h2{font-size:26px;font-weight:600;letter-spacing:-.014em}
+  h2 + p{margin-top:12px}
+  section p + p{margin-top:14px}
+
+  figure{margin:0}
+  .bleed{margin-top:40px}
+  .frame{background:var(--surface);border:1px solid var(--line);border-radius:3px;
+         padding:20px 18px;overflow-x:auto}
+  .frame svg{display:block;width:100%;min-width:720px;max-width:100%;height:auto}
+  figcaption{font-size:15px;line-height:1.5;color:var(--muted);margin-top:14px;max-width:72ch}
+  figcaption b{color:var(--ink-2);font-weight:500}
+
+  svg .nb{fill:var(--surface);stroke:var(--line-2);stroke-width:1.25}
+  svg .nb-key{fill:var(--sunk);stroke:var(--line-2);stroke-width:1.25}
+  svg .nb-in{fill:var(--paper);stroke:var(--line);stroke-width:1}
+  svg .nt{fill:var(--ink);font-family:var(--sans);font-size:13.5px;font-weight:600}
+  svg .nm{fill:var(--ink-2);font-family:var(--mono);font-size:10.5px}
+  svg .ns{fill:var(--muted);font-family:var(--sans);font-size:11px}
+  svg .ntag{fill:var(--muted);font-family:var(--sans);font-size:9.5px;font-weight:600;letter-spacing:.12em}
+  svg .hand{fill:var(--ink);font-family:var(--sans);font-size:11px;font-weight:600}
+  svg .ed{fill:none;stroke:var(--ink-2);stroke-width:1.4}
+  svg .ed-dot{fill:none;stroke:var(--ink-2);stroke-width:1.4;stroke-dasharray:2 3.5}
+  svg .ed-acc{fill:none;stroke:var(--accent);stroke-width:1.4;stroke-dasharray:6 4}
+  svg .ed-halt{fill:none;stroke:var(--halt);stroke-width:1.4;stroke-dasharray:5 4}
+  svg .el{fill:var(--muted);font-family:var(--sans);font-size:10.5px;font-weight:500}
+  svg .el-acc{fill:var(--accent);font-family:var(--sans);font-size:10.5px;font-weight:600}
+  svg .el-halt{fill:var(--halt);font-family:var(--sans);font-size:10.5px;font-weight:600}
+  svg .mk{fill:var(--ink-2)}
+  svg .mk-acc{fill:var(--accent)}
+  svg .xm{stroke:var(--halt);stroke-width:1.6}
+
+  .tools{margin-top:30px;display:grid;gap:30px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .tools h3{font-size:15px;font-weight:600;letter-spacing:.01em}
+  .tools h3 span{display:block;font-family:var(--mono);font-size:11px;font-weight:400;
+                 color:var(--muted);margin-top:3px;letter-spacing:0}
+  dl{margin:14px 0 0;border-top:1px solid var(--line)}
+  dl div{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;
+         padding-block:9px;border-bottom:1px solid var(--line)}
+  dt{font-family:var(--mono);font-size:12px;color:var(--ink)}
+  dd{margin:0;font-size:14.5px;line-height:1.45;color:var(--muted)}
+
+  ol.pipe{margin:22px 0 0;padding:0;list-style:none;counter-reset:step}
+  ol.pipe li{counter-increment:step;display:grid;grid-template-columns:26px minmax(0,1fr);
+             gap:0 14px;padding-block:12px;border-top:1px solid var(--line)}
+  ol.pipe li::before{content:counter(step);font-family:var(--sans);font-weight:600;font-size:12px;
+                     color:var(--accent);font-variant-numeric:tabular-nums;line-height:1.9}
+  ol.pipe p{font-size:15.5px;line-height:1.5;color:var(--muted)}
+  ol.pipe strong{font-family:var(--sans);font-size:14px;font-weight:600;color:var(--ink);
+                 display:block;margin-bottom:3px}
+  ol.pipe code{display:block;color:var(--ink-2);margin-top:5px;word-break:break-word}
+
+  .halt{margin-top:26px;border-left:2px solid var(--halt);padding:4px 0 4px 20px}
+  .halt p:first-child{font-family:var(--sans);font-size:15px;font-weight:600;color:var(--halt)}
+  .halt p + p{margin-top:10px;font-size:16px;color:var(--ink-2)}
+
+  .caveats{margin-top:18px;padding:0;list-style:none}
+  .caveats li{padding-block:11px;border-top:1px solid var(--line);font-size:15.5px;
+              line-height:1.5;color:var(--muted)}
+  .caveats b{color:var(--ink);font-family:var(--sans);font-size:13.5px;font-weight:600}
+
+  footer{margin-top:60px;padding-top:18px;border-top:1px solid var(--line-2);
+         font-family:var(--sans);font-size:13px;color:var(--muted);
+         display:flex;flex-wrap:wrap;gap:6px 26px}
+
+  @media (max-width:560px){
+    .wrap{padding-block:38px 52px}
+    .deck{font-size:18px}
+    .spec div{flex:1 1 46%}
+  }
+</style>
+
+<div class="wrap">
+  <header class="col">
+    <p class="eyebrow">Plugin architecture</p>
+    <h1>Bambu Connector Wiring</h1>
+    <p class="deck">Two MCP servers, two skills and one Python script stand between Claude and a Bambu Lab printer. Every path on this page reads, preps or watches — <em>none of them presses Print</em>.</p>
+  </header>
+
+  <div class="spec">
+    <div><b>2</b><span>MCP servers</span></div>
+    <div><b>10</b><span>First-party tools</span></div>
+    <div><b>2</b><span>Skills</span></div>
+    <div><b>1,932</b><span>Lines of code</span></div>
+    <div class="stop"><b>0</b><span>Control commands</span></div>
+  </div>
+
+  <figure class="bleed">
+    <div class="frame">
+      <svg viewBox="0 0 1000 596" role="img" aria-label="Dataflow diagram: Claude reaches Bambu Studio, a Python model script, the Bambu cloud API, ntfy and the printer through two MCP servers; no control commands are ever sent to the printer.">
+        <defs>
+          <marker id="a-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon class="mk" points="0,1.5 10,5 0,8.5"></polygon>
+          </marker>
+          <marker id="a-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon class="mk-acc" points="0,1.5 10,5 0,8.5"></polygon>
+          </marker>
+        </defs>
+
+        <!-- top band: local macOS targets -->
+        <rect class="nb" x="300" y="40" width="200" height="84" rx="2"></rect>
+        <text class="ntag" x="316" y="61">MACOS APP</text>
+        <text class="nt" x="316" y="82">Bambu Studio</text>
+        <text class="ns" x="316" y="100">plate opens here</text>
+        <text class="hand" x="316" y="115">you press Print plate</text>
+
+        <rect class="nb" x="540" y="40" width="250" height="84" rx="2"></rect>
+        <text class="ntag" x="556" y="61">GEOMETRY</text>
+        <text class="nt" x="556" y="82">model_tools.py</text>
+        <text class="ns" x="556" y="100">inspect · render · extract · project</text>
+        <text class="nm" x="556" y="116">reads + writes .3mf / .stl on disk</text>
+
+        <!-- claude -->
+        <rect class="nb-key" x="24" y="210" width="150" height="100" rx="2"></rect>
+        <text class="ntag" x="40" y="238">AGENT</text>
+        <text class="nt" x="40" y="261">Claude</text>
+        <text class="ns" x="40" y="280">Code · Cowork</text>
+        <text class="ns" x="40" y="296">on your Mac</text>
+
+        <rect class="nb-in" x="24" y="350" width="150" height="112" rx="2"></rect>
+        <text class="ntag" x="40" y="374">SKILLS LOADED</text>
+        <text class="nm" x="40" y="396">bambu-print-prep</text>
+        <text class="nm" x="40" y="414">bambu-print-watch</text>
+        <text class="ns" x="40" y="438">instructions,</text>
+        <text class="ns" x="40" y="452">not code</text>
+        <path class="ed-dot" d="M99 310 L99 350"></path>
+
+        <!-- servers -->
+        <rect class="nb-key" x="280" y="170" width="250" height="136" rx="2"></rect>
+        <text class="ntag" x="296" y="194">MCP SERVER</text>
+        <text class="nt" x="296" y="216">bambu-studio</text>
+        <text class="nm" x="296" y="236">server/index.js</text>
+        <text class="ns" x="296" y="256">dependency-free Node · 10 tools</text>
+        <text class="ns" x="296" y="274">file search · account sign-in</text>
+        <text class="ns" x="296" y="292">SSDP discovery · push · 3MF metadata</text>
+
+        <rect class="nb-in" x="280" y="334" width="250" height="56" rx="2"></rect>
+        <text class="nm" x="296" y="356">printer-config.json + token</text>
+        <text class="ns" x="296" y="376">~/.bambu-studio-connector/ · mode 0600</text>
+
+        <rect class="nb-key" x="280" y="440" width="250" height="128" rx="2"></rect>
+        <text class="ntag" x="296" y="464">MCP SERVER</text>
+        <text class="nt" x="296" y="486">bambu-printer</text>
+        <rect class="nb-in" x="296" y="500" width="218" height="52" rx="2"></rect>
+        <text class="nm" x="308" y="522">npx bambu-printer-mcp@1.1.5</text>
+        <text class="ns" x="308" y="540">third-party · fetched, not bundled</text>
+
+        <!-- external -->
+        <rect class="nb" x="660" y="150" width="310" height="84" rx="2"></rect>
+        <text class="ntag" x="676" y="174">NETWORK</text>
+        <text class="nt" x="676" y="196">Bambu cloud API</text>
+        <text class="nm" x="676" y="214">api.bambulab.com / .cn</text>
+        <text class="ns" x="676" y="229">no official public API — may change</text>
+
+        <rect class="nb" x="660" y="250" width="310" height="62" rx="2"></rect>
+        <text class="nt" x="676" y="278">ntfy.sh</text>
+        <text class="ns" x="676" y="297">phone alert on your subscribed topic</text>
+
+        <rect class="nb" x="660" y="420" width="310" height="150" rx="2"></rect>
+        <text class="ntag" x="676" y="444">YOUR LAN</text>
+        <text class="nt" x="676" y="466">Bambu Lab printer</text>
+        <text class="ns" x="676" y="486">normal cloud mode — no Developer Mode</text>
+
+        <!-- edges -->
+        <path class="ed" d="M174 240 L274 240" marker-end="url(#a-ink)"></path>
+        <text class="el" x="224" y="232" text-anchor="middle">MCP · stdio</text>
+
+        <path class="ed" d="M174 290 L225 290 L225 415 L405 415 L405 434" marker-end="url(#a-ink)"></path>
+        <text class="el" x="318" y="407" text-anchor="middle">MCP · stdio</text>
+
+        <path class="ed" d="M340 306 L340 328" marker-end="url(#a-ink)"></path>
+        <text class="el" x="352" y="324">writes host · serial · access code</text>
+
+        <path class="ed" d="M470 390 L470 434" marker-end="url(#a-ink)"></path>
+        <text class="el" x="480" y="418">reads → env vars</text>
+
+        <path class="ed" d="M400 170 L400 130" marker-end="url(#a-ink)"></path>
+        <text class="el" x="392" y="152" text-anchor="end">open -a · loads the plate</text>
+
+        <path class="ed" d="M480 170 L480 132 L645 132 L645 130" marker-end="url(#a-ink)"></path>
+        <text class="el" x="490" y="162">execFile python3 · project info</text>
+
+        <path class="ed-acc" d="M24 380 L10 380 L10 20 L645 20 L645 34" marker-end="url(#a-acc)"></path>
+        <text class="el-acc" x="330" y="14" text-anchor="middle">Bash · python3 model_tools.py — straight from the skill</text>
+
+        <path class="ed" d="M530 200 L654 200" marker-end="url(#a-ink)"></path>
+        <text class="el" x="592" y="192" text-anchor="middle">HTTPS · sign-in, sync</text>
+
+        <path class="ed" d="M530 281 L654 281" marker-end="url(#a-ink)"></path>
+        <text class="el" x="592" y="273" text-anchor="middle">HTTPS · push</text>
+
+        <path class="ed-dot" d="M530 300 L600 300 L600 450 L654 450" marker-end="url(#a-ink)"></path>
+        <text class="el" x="608" y="378">UDP 2021 / 1990 · SSDP discovery</text>
+
+        <path class="ed" d="M530 504 L654 504" marker-end="url(#a-ink)"></path>
+        <text class="el" x="592" y="496" text-anchor="middle">LAN · status + camera</text>
+
+        <path class="ed-halt" d="M530 540 L660 540"></path>
+        <path class="xm" d="M588 533 L602 547 M602 533 L588 547"></path>
+        <text class="el-halt" x="595" y="562" text-anchor="middle">start · heat · upload — never sent</text>
+      </svg>
+    </div>
+    <figcaption><b>Every route out of Claude, and the one that is cut.</b> Solid lines are calls the plugin makes; the dashed teal path is the prep skill running the Python script itself, bypassing the MCP server; the dotted line is passive SSDP listening. The crossed orange edge is the rule the whole design turns on: status and camera frames come back from the printer, and nothing is ever sent to it.</figcaption>
+  </figure>
+
+  <section class="col">
+    <h2>The two servers</h2>
+    <p>They are wired differently on purpose. <code>bambu-studio</code> is first-party and dependency-free — it drives the Mac, talks to Bambu's cloud, and shells out to Python. <code>bambu-printer</code> is a forty-line launcher: it reads your config, maps it onto the environment variables a community package expects, and hands the session over.</p>
+  </section>
+    <div class="tools">
+      <div>
+        <h3>bambu-studio <span>server/index.js · 708 lines</span></h3>
+        <dl>
+          <div><dt>open_in_bambu_studio</dt><dd><code>open -a</code> on the app with your files</dd></div>
+          <div><dt>find_model_files</dt><dd>walks folders for .3mf and .stl</dd></div>
+          <div><dt>bambu_studio_status</dt><dd><code>pgrep -if bambustudio</code></dd></div>
+          <div><dt>bambu_account_request_code</dt><dd>emails you a verification code</dd></div>
+          <div><dt>bambu_account_login</dt><dd>trades the code for a ~3-month token</dd></div>
+          <div><dt>bambu_account_sync</dt><dd>refetches serial + access code, re-finds the IP</dd></div>
+          <div><dt>bambu_cloud_printer_status</dt><dd>printer state from the cloud side</dd></div>
+          <div><dt>send_push</dt><dd>ntfy topic → your phone</dd></div>
+          <div><dt>get_project_info</dt><dd>reads 3MF name, description, pictures</dd></div>
+          <div><dt>set_project_info</dt><dd>writes them back into the file</dd></div>
+        </dl>
+      </div>
+      <div>
+        <h3>bambu-printer <span>server/printer-launcher.js · 70 lines</span></h3>
+        <dl>
+          <div><dt>get_printer_status</dt><dd>state, progress, layer, time left, temps</dd></div>
+          <div><dt>camera_snapshot</dt><dd>a frame from the chamber camera</dd></div>
+          <div><dt>set_light</dt><dd>work light, when firmware allows it</dd></div>
+        </dl>
+        <p style="margin-top:16px;font-size:15px;color:var(--muted)">These tools belong to <code>bambu-printer-mcp</code>, fetched through <code>npx</code> at launch. The launcher's own job is narrow: find <code>printer-config.json</code> — an explicit path, your home directory, or a Cowork project folder — refuse to start if host, access code or serial is still a placeholder, and pass the rest through as environment.</p>
+      </div>
+    </div>
+
+  <section class="col">
+    <h2>From model file to plate</h2>
+    <p>The prep skill's whole job is turning a file you downloaded into a plate you can look at and approve. The geometry work happens in one Python script with no dependencies for inspection — <code>numpy</code> and <code>matplotlib</code> come in only for previews.</p>
+  </section>
+
+  <figure class="bleed col" style="max-width:none">
+    <div class="frame">
+      <svg viewBox="0 0 920 150" role="img" aria-label="A downloaded model file is read by model_tools.py extract, which writes a new arranged 3MF that the server opens in Bambu Studio, where you press Print plate.">
+        <defs>
+          <marker id="b-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon class="mk" points="0,1.5 10,5 0,8.5"></polygon>
+          </marker>
+        </defs>
+        <rect class="nb-in" x="8" y="34" width="150" height="82" rx="2"></rect>
+        <text class="ntag" x="22" y="58">DOWNLOADED</text>
+        <text class="nm" x="22" y="79">model.3mf</text>
+        <text class="ns" x="22" y="99">many objects, one file</text>
+
+        <rect class="nb-key" x="218" y="34" width="260" height="82" rx="2"></rect>
+        <text class="nt" x="234" y="58">model_tools.py extract</text>
+        <text class="nm" x="234" y="78">--parts --scale --lay-flat</text>
+        <text class="nm" x="234" y="95">--bed 380 --gap 8</text>
+        <text class="ns" x="234" y="110">picks a resting face per part, then arranges</text>
+
+        <rect class="nb-in" x="538" y="34" width="150" height="82" rx="2"></rect>
+        <text class="ntag" x="552" y="58">WRITTEN</text>
+        <text class="nm" x="552" y="79">plate.3mf</text>
+        <text class="ns" x="552" y="99">geometry only</text>
+
+        <rect class="nb" x="748" y="34" width="164" height="82" rx="2"></rect>
+        <text class="nt" x="762" y="58">Bambu Studio</text>
+        <text class="ns" x="762" y="78">your presets apply</text>
+        <text class="hand" x="762" y="99">you press Print plate</text>
+
+        <path class="ed" d="M158 75 L212 75" marker-end="url(#b-ink)"></path>
+        <text class="el" x="185" y="66" text-anchor="middle">reads</text>
+        <path class="ed" d="M478 75 L532 75" marker-end="url(#b-ink)"></path>
+        <text class="el" x="505" y="66" text-anchor="middle">writes</text>
+        <path class="ed" d="M688 75 L742 75" marker-end="url(#b-ink)"></path>
+        <text class="el" x="715" y="66" text-anchor="middle">open -a</text>
+      </svg>
+    </div>
+    <figcaption><b>One file in, one plate out.</b> Lay-flat scores each candidate face of the mesh on bed contact, overhang that would need support, centre-of-mass height and part height — a heuristic, not an optimal-orientation solver. It reports contact area and a warning per part; the orientation check in Studio is still yours.</figcaption>
+  </figure>
+
+  <section class="col">
+    <ol class="pipe">
+      <li><p><strong>Inspect</strong>List every part with real dimensions, straight from the mesh — no dependencies needed.<code>python3 model_tools.py inspect model.3mf</code></p></li>
+      <li><p><strong>Render</strong>A labelled preview so "the base" means the same piece to both of you.<code>… render model.3mf --out preview.png</code></p></li>
+      <li><p><strong>Extract</strong>Pull only the parts you named into a clean file, scaled, laid flat and arranged on the bed.<code>… extract model.3mf --parts "base" --scale 0.2 --lay-flat --out plate.3mf</code></p></li>
+      <li><p><strong>Name it</strong>Project name, description, designer credit and embedded pictures — also exposed as <code style="display:inline">get_project_info</code> / <code style="display:inline">set_project_info</code>.<code>… project plate.3mf --set-name "Hive base"</code></p></li>
+      <li><p><strong>Load it</strong>The plate opens in Bambu Studio with your own presets. The last click is yours.</p></li>
+    </ol>
+  </section>
+
+  <section class="col">
+    <h2>The line it doesn't cross</h2>
+    <div class="halt">
+      <p>Never start, queue or resume a print, and never heat the nozzle or bed.</p>
+      <p>The rule is written into the watch skill, not just into the code: Claude checks and reports, you press <span style="font-family:var(--sans);font-weight:600">Print plate</span>. No print-start or upload tool is called even when one is available.</p>
+    </div>
+    <p style="margin-top:22px">This is what lets the printer stay in normal cloud mode. No Developer Mode, no unlocked LAN control, and the Bambu Handy app keeps working alongside it — status reads and camera frames are all the plugin ever asks for.</p>
+  </section>
+
+  <section class="col">
+    <h2>Where it's fragile</h2>
+    <ul class="caveats">
+      <li><b>No official API.</b> Sign-in and sync follow Bambu's cloud endpoints as documented by the OpenBambuAPI community project. Bambu can change them at any time.</li>
+      <li><b>Firmware keeps tightening.</b> Snapshots and status work in cloud mode on current firmware, but behaviour varies by model. Control calls may come back with auth errors such as <code>84033543</code> — expected, and not retried in a loop.</li>
+      <li><b>Plain 3MF, by design.</b> Files the prep skill writes carry geometry only, so Studio notes they're "not from Bambu Lab" and applies your current presets.</li>
+      <li><b>Cameras differ.</b> A1 and P1 use the TCP-6000 path with no extra tooling; X1 and H2 need <code>ffmpeg</code> installed.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>MIT licensed</span>
+    <span>Not affiliated with or endorsed by Bambu Lab</span>
+    <span>macOS · Node 18+ · Python 3</span>
+  </footer>
+</div>
