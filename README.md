@@ -12,6 +12,8 @@ Ask Claude things like:
 - "Is the print bed clear?" — grabs a camera snapshot and gives a verdict with the photo
 - "How's the print going?" — progress, temps, time remaining; can run on a schedule
 
+- "Blend the black into the blue on the forewings" — turns the filament-change purge into a printed gradient and shows a dashboard of the predicted colors (see [Color blends](#color-blends))
+
 By design, this plugin **never starts a print, heats anything, or sends control commands**. It preps and watches; the "Print plate" click in Bambu Studio stays yours. This also means it works with the printer in normal cloud mode — no Developer Mode, and the Bambu Handy app keeps working.
 
 ## Install
@@ -43,7 +45,27 @@ Manual: create `printer-config.json` in `~/.bambu-studio-connector/` (or a Cowor
 - `server/index.js` — dependency-free MCP server: open files in Bambu Studio, search for model files, Bambu account sign-in/sync (cloud API + SSDP discovery)
 - `server/printer-launcher.js` — runs [bambu-printer-mcp](https://github.com/DMontgomery40/bambu-printer-mcp) via npx for camera snapshots and live printer status
 - `skills/bambu-print-prep` — workflow + `model_tools.py`: inspect/render/extract/scale/lay-flat/arrange parts from 3MF/STL, no dependencies for inspection
+- `skills/bambu-color-blend` — `blend_tools.py`: purge-gradient reorder for sliced plates, Bambu Studio post-processing hook, project prep (per-layer filament order, zero purge for one pair, arcs off), calibration strip, and the HTML dashboard template (`assets/blend_report.html`)
 - `skills/bambu-print-watch` — bed-clear camera checks, status reports, scheduled monitoring; hard rule against starting prints. Sends phone alerts via `send_push` (free [ntfy](https://ntfy.sh) — set `ntfy_topic` in printer-config.json and subscribe in the ntfy app)
+
+## Color blends
+
+When the printer switches filament, the old color takes a few tens of mm³ to clear the nozzle; Bambu normally purges that away. The `bambu-color-blend` skill skips most of the purge for **one color pair** and prints a zone you choose first, ordered so the fading color lands as a gradient. All other color pairs keep their normal purge.
+
+What you get:
+
+- **A Bambu Studio project with a post-processing script.** Open it, allow the script when Studio asks, then **Slice plate** and **Print plate** as usual — the script reorders the lines on every slice.
+- **A sliced plate file** (`.gcode.3mf`) with the blend already in it, for printing from the SD card. Opening it in Bambu Studio asks you to slice again, which regenerates the G-code and drops the blend unless the project has the script — use the project instead.
+- **An HTML dashboard.** Bambu Studio's preview draws the zone in the plain second color; the dashboard shows the predicted print, the print order, and the result at fast/typical/slow clear-out rates.
+
+Good to know:
+
+- "Partial purging volume set to 0" in Bambu Studio is expected — that missing purge is the blend.
+- Don't move or rescale the model after the blend is set up; it's pinned to the plate. Ask Claude to rebuild.
+- Works best between similar or dark colors (black → navy). Into white or pale colors, leftovers look like gray or brown streaks.
+- One blend per filament change: on multi-copy plates, only the first copy after the change gets the full blend.
+- After your first print, tell Claude which dashboard panel matches; it saves that clear-out rate for your printer and color pair (`~/.bambu-studio-connector/blend-calibration.json`).
+- Needs a Python 3 with numpy for the script (macOS's `/usr/bin/python3` has it) and matplotlib for the dashboard.
 
 ## Caveats
 

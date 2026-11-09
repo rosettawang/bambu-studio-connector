@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Color blend · {{TITLE}}</title>
+<style>
+:root{--bg:#f6f4ef;--panel:#fffdf8;--ink:#1f1d1a;--muted:#6b665d;--line:#e3ded3;--accent:#2f6f8f;--ok:#2f7d4f;--bad:#b3412e;--warn-bg:#fff4dc;--warn-line:#e9c46a;--stage:#ebe7de}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#151514;--panel:#1e1d1b;--ink:#ece8df;--muted:#a39d91;--line:#34322e;--accent:#7fb6d1;--ok:#6cc08b;--bad:#ec8a77;--warn-bg:#2d2616;--warn-line:#8a6d2a;--stage:#2a2926}}
+:root[data-theme="dark"]{--bg:#151514;--panel:#1e1d1b;--ink:#ece8df;--muted:#a39d91;--line:#34322e;--accent:#7fb6d1;--ok:#6cc08b;--bad:#ec8a77;--warn-bg:#2d2616;--warn-line:#8a6d2a;--stage:#2a2926}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 64px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;margin-bottom:16px}
+h1{font-size:22px;margin:0;font-weight:650;letter-spacing:-.01em}
+.chip{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--panel)}
+.chip.sliced{border-color:var(--accent);color:var(--accent)}
+h2{font-size:15px;margin:28px 0 10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+.callout{background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:10px;padding:14px 16px;margin:8px 0 4px}
+.callout b{display:block;margin-bottom:4px}
+.callout ol{margin:6px 0 0;padding-left:20px}
+.hero{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
+figure img{width:100%;height:auto;display:block;background:var(--stage);border-radius:6px}
+figcaption{font-size:13px;color:var(--muted)}
+figcaption b{color:var(--ink);font-weight:600}
+.card.cal{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px}
+th{width:34%;color:var(--muted);font-weight:500}
+tr:last-child th,tr:last-child td{border-bottom:0}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;border:1px solid var(--line);vertical-align:-1px;margin-right:5px}
+ul.checks{list-style:none;padding:0;margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+ul.checks li{padding:9px 12px;border-bottom:1px solid var(--line)}
+ul.checks li:last-child{border-bottom:0}
+ul.checks li span{display:inline-block;width:18px;font-weight:700}
+ul.checks li.ok span{color:var(--ok)} ul.checks li.bad span{color:var(--bad)}
+ul.checks small{color:var(--muted);margin-left:6px}
+.note{font-size:13px;color:var(--muted);margin-top:8px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;word-break:break-all}
+@media (max-width:760px){.hero,.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>{{TITLE}}</h1>
+  <span class="chip sliced">Sliced plate</span>
+  <span class="chip">{{DATE}}</span>
+</header>
+
+<div class="callout">
+  <b>Bambu Studio can't show this blend: its preview draws the zone in the plain second color. This page is the preview.</b>
+  <ol>
+    <li>Open the project in Bambu Studio. If it asks whether to allow the post-processing script, allow it; that script is the blend.</li>
+    <li>Click <b>Slice plate</b>, then <b>Print plate</b>. The script reorders the lines on every slice, so moving nothing and re-slicing is safe.</li>
+    <li>Don't move or rescale the model: the blend zone is pinned to where it sits on the plate. Ask Claude to rebuild instead.</li>
+    <li>The "partial purging volume set to 0" warning is expected: that missing purge is what makes the blend.</li>
+  </ol>
+</div>
+
+<h2>What it should look like</h2>
+<div class="hero">
+  <figure><img src="{{MAIN_PRED}}" alt="Predicted printed colors"><figcaption><b>Predicted print</b> · clear-out rate: {{MAIN_LABEL}}</figcaption></figure>
+  <figure><img src="{{STUDIO_VIEW}}" alt="What Bambu Studio's preview shows"><figcaption><b>What Bambu Studio's preview shows</b> · flat filament colors, no blend</figcaption></figure>
+</div>
+<p class="note">{{COLOR_NOTE}}</p>
+
+<h2>Depending on how fast the old color clears</h2>
+<div class="grid">{{PREDICTIONS}}</div>
+<p class="note">{{CAL_STATUS}} After printing, compare the print to these and tell Claude which one matches (or "between typical and slow"); it saves that for this printer and color pair.</p>
+
+<h2>How the order makes the gradient</h2>
+<div class="two">
+  <figure><img src="{{ORDER_VIEW}}" alt="Print order in the blend zone"><figcaption><b>Print order in the blend zone</b> · purple prints first (most old color), yellow last (clean)</figcaption></figure>
+  <figure><img src="{{UNORDERED}}" alt="Same purge, slicer's own order"><figcaption><b>Same purge, slicer's own order</b> · where the leftover color would land without the reordering</figcaption></figure>
+</div>
+
+<h2>Numbers</h2>
+<table>{{TABLE}}</table>
+
+<h2>Safety checks</h2>
+<ul class="checks">{{CHECKS}}</ul>
+<p class="note">{{LOG}}</p>
+<p class="note">Plate file: <code>{{PLATE_FILE}}</code></p>
+</div>
+</body>
+</html>
