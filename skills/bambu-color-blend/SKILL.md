@@ -25,12 +25,12 @@ Script: `scripts/blend_tools.py` (numpy; matplotlib for the dashboard). Run `pyt
 
    ```bash
    python3 blend_tools.py prep project.3mf --out project-blend.3mf \
-     --layer 2 --order 1,2,3,4 --zero-flush 1:2 --no-arcs
+     --layer-order 2:1,2,3,4 --no-arcs
    ```
 
-   - `--order` sets that layer's filament order so the second color comes **right after** the first (otherwise another color's leftovers go into the zone). This is Bambu Studio's own per-plate setting and survives re-slicing.
-   - `--zero-flush FROM:TO` sets the purge for that one pair to 0 (Bambu then warns "partial purging volume set to 0" — expected).
+   - `--layer-order LAYER:ORDER` (repeatable) sets that layer's filament order so the second color comes **right after** the first; otherwise another color's leftovers go into the zone. It's Bambu Studio's own per-plate setting and survives re-slicing. Two blends on one layer (A into B, then B back into A) need B first on that layer and the layer below ending on A, e.g. `--layer-order 2:2,3,4,1 --layer-order 3:2,1,3,4`.
    - `--no-arcs` turns arc fitting off; the reorder refuses to touch arc moves.
+   - **Don't zero the pair's purge for the whole print** (`--zero-flush`). The same color change usually happens elsewhere (a body that switches colors every layer) and those spots get contaminated. Put `"purge": 0` in the spec instead: it trims the purge of the blended change only.
 
 3. **Write the zone spec** (JSON, plate millimetres, filaments numbered as in Bambu Studio):
 
@@ -38,8 +38,10 @@ Script: `scripts/blend_tools.py` (numpy; matplotlib for the dashboard). Run `pyt
    {"title": "Forewing black-to-blue blend", "layer_z": 0.32, "from": 1, "to": 2,
     "zones": [{"polygon": [[90,128],[125,128],[125,150],[90,150]], "group": "left"},
               {"polygon": [[131,128],[166,128],[166,150],[131,150]], "group": "right"}],
-    "clean_edge": [[80,128],[176,128]], "bin": 0.5}
+    "clean_edge": [[80,128],[176,128]], "bin": 0.5, "purge": 0}
    ```
+
+   Several blends: `{"blends": [{...}, {...}]}` — each item takes the same keys; top-level keys are defaults. `"split_mm": 1.5` cuts lines into pieces so a zone whose lines run *across* the gradient is ordered piece by piece (costs some start/stop texture; prefer lines parallel to the clean edge). With a `key_npz`, `"key_name"`/`"group_name"` pick arrays from one file.
 
    Lines farthest from `clean_edge` (or `clean_point`) print first. Groups alternate inside each band so mirrored parts get the same shade. For an irregular field, pass `"key_npz"` instead: arrays `key` (higher = cleaner, NaN outside), optional `group`, and `x0`, `y0`, `px_mm` placing pixel [0,0] on the plate. The zone is pinned to the plate: if the model moves, rebuild the spec.
 
@@ -74,9 +76,17 @@ Script: `scripts/blend_tools.py` (numpy; matplotlib for the dashboard). Run `pyt
 
    Saved to `~/.bambu-studio-connector/blend-calibration.json` per printer profile and color pair; later dashboards lead with it. For a cleaner measurement, `make-strip` writes an 80 × 12 mm, two-layer strip (plain 3MF). In Bambu Studio, right-click it › Add height range modifier › from the first layer height to the top › the second filament (Bambu ignores paint in plain 3MF files, and a file that claims to be a Bambu project without the rest of one crashes the slicer). Then prep, slice, blend with `clean_point` at the far Y end, and compare the photo with the dashboard.
 
+## Check these before blending — each one ruined or nearly ruined a real print
+
+- **Inner-layer paint conflicts go to the lowest filament number.** On parts three or more layers thick, where top paint and underside paint both reach an inner layer, Bambu uses the lower-numbered filament. White top marks over orange underside spots came out pink because orange was filament 3 and white 4. Number the colors that must look clean (white, pale colors) lower than strong underside colors. Bambu matches filaments to AMS slots by color at print time, so the user doesn't move spools.
+- **A thin top layer shows what's under it.** A 0.12 mm white or pale layer over orange reads pink. Add a layer so the top color sits on itself.
+- **Purge tables in downloaded projects are often stale.** They were set for the author's colors. Run `inspect` and look at each change's `purge_mm3`, especially into white (a sparkly blue into white needed about 600 mm³, and the downloaded table had 159).
+- **Size the zone to the clear-out rate.** Black into a dark blue cleared about half every 10 mm³ on an A1, so most of the change is over within about 30–40 mm³. A zone much bigger than 3–4× the rate prints mostly clean.
+- Overlapping parts on the first layer (a body over a wing plate) also resolve to the lower filament number. To paint a dot on an overlap, paint it on both parts.
+
 ## What the reorder does (so you can explain it)
 
-- Finds the change from the first to the second filament on the layer.
+- Finds the change from the first to the second filament on the layer, and trims that change's purge if the spec says so (other changes keep theirs).
 - Moves the prime tower that Bambu prints right after the change to *after* the blend zone (otherwise the tower eats the leftover color), restoring the nozzle height and retraction state the tower expects.
 - Prints the zone's lines darkest-band first, alternating groups, then everything else in the slicer's order, re-travelling between pieces.
 - Keeps wipes' retraction, tags the moved sections so Bambu's preview and time estimate stay right.

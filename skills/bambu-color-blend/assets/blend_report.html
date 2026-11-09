@@ -57,7 +57,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;wo
     <li>Open the project in Bambu Studio. If it asks whether to allow the post-processing script, allow it; that script is the blend.</li>
     <li>Click <b>Slice plate</b>, then <b>Print plate</b>. The script reorders the lines on every slice, so moving nothing and re-slicing is safe.</li>
     <li>Don't move or rescale the model: the blend zone is pinned to where it sits on the plate. Ask Claude to rebuild instead.</li>
-    <li>The "partial purging volume set to 0" warning is expected: that missing purge is what makes the blend.</li>
+    <li>Only the blended color changes skip their purge, inside the script; Bambu Studio still shows and uses its normal purge settings for everything else.</li>
   </ol>
 </div>
 
@@ -75,7 +75,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;wo
 <h2>How the order makes the gradient</h2>
 <div class="two">
   <figure><img src="{{ORDER_VIEW}}" alt="Print order in the blend zone"><figcaption><b>Print order in the blend zone</b> · purple prints first (most old color), yellow last (clean)</figcaption></figure>
-  <figure><img src="{{UNORDERED}}" alt="Same purge, slicer's own order"><figcaption><b>Same purge, slicer's own order</b> · where the leftover color would land without the reordering</figcaption></figure>
+  <figure><img src="{{UNORDERED}}" alt="Without the blend script"><figcaption><b>Without the blend script</b> · Bambu's own purge and line order</figcaption></figure>
 </div>
 
 <h2>Numbers</h2>

@@ -8,8 +8,9 @@ gradient: darkest where the zone should be darkest, clean where it should be cle
 
 Subcommands
   inspect      list layers, filament changes and the settings a blend depends on
-  prep         patch an unsliced Bambu project (.3mf): per-layer filament order, zero purge for one
-               pair, arc fitting off. Slice it afterwards (Bambu Studio or its CLI).
+  prep         patch an unsliced Bambu project (.3mf): per-layer filament order(s), arc fitting off.
+               Slice it afterwards (Bambu Studio or its CLI). Prefer the spec's per-change "purge" over
+               --zero-flush, which changes that pair's purge for the whole print.
   blend        reorder one filament change in a sliced plate (.gcode.3mf) and write a new one,
                plus an HTML dashboard with predicted colors
   report       (re)build the dashboard for an original/blended pair
@@ -159,7 +160,10 @@ class Zone:
        "zones": [{"polygon": [[x,y],...], "group": "left"}, ...],   # optional; default: whole layer
        "clean_edge": [[x,y],[x,y],...]  or  "clean_point": [x,y],    # cleanest end (plate mm)
        "key_npz": "field.npz",          # alternative: arrays key (H,W), optional group (H,W), x0, y0, px_mm
-       "key_min": 0.12, "bin": 0.5}
+       "key_min": 0.12, "bin": 0.5,
+       "purge": 0,        # optional: purge (mm3) for this one change only; others keep theirs
+       "split_mm": 1.5}   # optional: cut lines into pieces so lines crossing the gradient are ordered too
+    Several blends: {"blends": [{...}, {...}]} - each item takes the keys above; top-level keys are defaults.
     """
 
     def __init__(self, spec, spec_dir='.'):
@@ -170,7 +174,8 @@ class Zone:
             p = spec['key_npz']
             p = p if os.path.isabs(p) else os.path.join(spec_dir, p)
             f = np.load(p)
-            self.npz = dict(key=f['key'], group=f['group'] if 'group' in f else None,
+            kn, gn = spec.get('key_name', 'key'), spec.get('group_name', 'group')
+            self.npz = dict(key=f[kn], group=f[gn] if gn in f else None,
                             x0=float(f['x0']), y0=float(f['y0']), px=float(f['px_mm']))
             self.key_min = float(spec.get('key_min', 0.0))
             self.bin = float(spec.get('bin', 0.05))
@@ -218,7 +223,35 @@ def find_change(lines, z, frm, to):
              + '. Set the layer\'s filament order with `prep --order` and re-slice.')
 
 
-def blend_gcode(text, zone, z, frm, to, log):
+def trim_purge(L, tc, stop, target_mm3):
+    """Scale the purge (FLUSH blocks) of the change at line tc to target_mm3. Returns filament mm removed."""
+    blocks, inside = [], False
+    for n in range(tc, stop):
+        s = L[n].strip()
+        if s == '; FLUSH_START':
+            inside = True
+        elif s == '; FLUSH_END':
+            inside = False
+        elif inside:
+            m = MOVE.match(L[n])
+            if m and set(params(m.group(2))) <= {'E', 'F'} and params(m.group(2)).get('E', 0) > 0:
+                blocks.append(n)
+    total = sum(params(MOVE.match(L[n]).group(2))['E'] for n in blocks)
+    if not blocks or total <= 0:
+        return 0.0, 0.0
+    k = max(0.0, min(1.0, target_mm3 / (total * FIL_AREA)))
+    removed = 0.0
+    for n in blocks:
+        p = params(MOVE.match(L[n]).group(2)); e = p['E']; ne = e * k; removed += e - ne
+        L[n] = (f'G1 E{ne:.5f}' + (f" F{p['F']:g}" if 'F' in p else '')) if ne > 1e-5 else '; (purge trimmed for color blend)'
+    for n in range(tc, stop):     # tell the firmware the shorter flush length too
+        mm = re.match(r'^(M620\.10 A1 .*?\bL)([\d.]+)(.*)$', L[n])
+        if mm:
+            L[n] = f'{mm.group(1)}{float(mm.group(2)) * k:g}{mm.group(3)}'
+    return removed, total * FIL_AREA
+
+
+def blend_gcode(text, zone, z, frm, to, log, purge=None, split_mm=None):
     L = text.split('\n')
     tc = find_change(L, z, frm, to)
     # prime tower that the slicer prints right after the change: from the end of the change G-code
@@ -231,6 +264,10 @@ def blend_gcode(text, zone, z, frm, to, log):
         ends = [n for n in range(tc, wt_end) if L[n].strip() == 'M1007 S1' or re.match(r'^M621 S\d+A', L[n].strip())]
         if ends:
             tw0, tw1 = ends[-1] + 1, wt_end + 1
+    removed = 0.0
+    if purge is not None:
+        removed, was = trim_purge(L, tc, tw0 or obj, float(purge))
+        log.append(f'purge for {frm + 1}->{to + 1} at z={z:g}: {was:.0f} -> {was - removed * FIL_AREA:.0f} mm3 (other changes untouched)')
     start = obj
     end = next((n for n in range(start + 1, len(L)) if TOOL.match(L[n]) or L[n].startswith('; WIPE_TOWER_START')
                 or L[n].startswith('; CHANGE_LAYER') or L[n].startswith('; FEATURE: Prime')), len(L))
@@ -255,9 +292,22 @@ def blend_gcode(text, zone, z, frm, to, log):
         if 'F' in d and e > 0:
             fe = f"F{d['F']:g}"
         if e > 0 and xy:
-            mv = (x, y, nx, ny, e, fe)
-            k, g = zone.classify((x + nx) / 2, (y + ny) / 2)
-            (band.append((k, g, len(band), mv)) if k is not None else rest.append(('ext', mv)))
+            # optionally cut a line into pieces so a line that crosses the gradient is ordered piece by piece
+            seg_len = math.hypot(nx - x, ny - y)
+            npc = max(1, math.ceil(seg_len / split_mm)) if split_mm else 1
+            pieces = []
+            for q in range(npc):
+                ax_, ay_ = x + (nx - x) * q / npc, y + (ny - y) * q / npc
+                bx_, by_ = x + (nx - x) * (q + 1) / npc, y + (ny - y) * (q + 1) / npc
+                k, g = zone.classify((ax_ + bx_) / 2, (ay_ + by_) / 2)
+                kb = None if k is None else (math.floor(k / zone.bin), g)
+                if pieces and pieces[-1][0] == kb:
+                    pieces[-1][1][2:4] = [bx_, by_]; pieces[-1][1][4] += e / npc
+                else:
+                    pieces.append([kb, [ax_, ay_, bx_, by_, e / npc, fe], k, g])
+            for kb, mv, k, g in pieces:
+                mv = tuple(mv)
+                (band.append((k, g, len(band), mv)) if kb is not None else rest.append(('ext', mv)))
         elif xy and e < 0:      # wipe: keep it only if it follows a kept extrusion
             rest.append(('wipe', (l, nx, ny)) if rest and rest[-1][0] == 'ext' else ('raw', f'G1 E{e:.5f} F1800'))
         elif xy:
@@ -324,8 +374,24 @@ def blend_gcode(text, zone, z, frm, to, log):
         rest_out.append(f'G1 X{xe:.3f} Y{ye:.3f} F12000')
     out = pre + head + body + tail + tower + mid + rest_out + L[end:]
     info = dict(change_line=tc, moves=len(order), zone_volume=sum(m[4] for m in order) * FIL_AREA,
-                rest_moves=sum(1 for k, _ in rest if k == 'ext'), tower_moved=tw0 is not None)
+                rest_moves=sum(1 for k, _ in rest if k == 'ext'), tower_moved=tw0 is not None,
+                purge_removed_mm=removed, layer_z=z, frm=frm + 1, to=to + 1)
     return '\n'.join(out), info
+
+
+def blend_items(spec):
+    base = {k: v for k, v in spec.items() if k != 'blends'}
+    return [dict(base, **b) for b in spec['blends']] if 'blends' in spec else [base]
+
+
+def apply_blends(text, spec, spec_dir, log):
+    infos = []
+    for b in blend_items(spec):
+        zone = Zone(b, spec_dir)
+        text, info = blend_gcode(text, zone, float(b['layer_z']), int(b['from']) - 1, int(b['to']) - 1, log,
+                                 purge=b.get('purge'), split_mm=b.get('split_mm'))
+        infos.append(info)
+    return text, infos
 
 
 def net_e(text):
@@ -337,10 +403,12 @@ def net_e(text):
     return tot
 
 
-def checks(orig, new, z):
+def checks(orig, new, zs, removed=0.0):
     res = []
-    d = net_e(new) - net_e(orig)
-    res.append(('Same amount of filament as the slicer\'s file', abs(d) < 0.01, f'difference {d:+.3f} mm'))
+    d = net_e(new) - net_e(orig) + removed
+    res.append(('Same filament as the slicer\'s file, apart from the trimmed purge', abs(d) < 0.01,
+                f'difference {d:+.3f} mm after {removed:.1f} mm of purge removed'))
+    zs = zs if isinstance(zs, (list, tuple)) else [zs]
     # no long extrusion that starts somewhere unexpected (e.g. from the purge chute)
     x = y = 0.0; bad = []
     cz = 0.0; feat = ''
@@ -353,7 +421,7 @@ def checks(orig, new, z):
         if not m:
             continue
         p = params(m.group(2)); nx, ny = p.get('X', x), p.get('Y', y)
-        if abs(cz - z) < 1e-3 and p.get('E', 0) > 0 and ('X' in p or 'Y' in p) and 'Prime' not in feat \
+        if any(abs(cz - z) < 1e-3 for z in zs) and p.get('E', 0) > 0 and ('X' in p or 'Y' in p) and 'Prime' not in feat \
                 and (x < 0 or y < 0 or math.hypot(nx - x, ny - y) > 120):
             bad.append(n)
         x, y = nx, ny
@@ -365,7 +433,7 @@ def checks(orig, new, z):
 
 def layer_segments(text, z):
     """segments on layer z: (x0,y0,x1,y1, tool, prev_tool, mm3_since_change, feature, seq)"""
-    segs, x, y, cz, tool, prev, V, feat, flush, seq, tower = [], 0., 0., 0., None, None, 0., '', False, 0, False
+    segs, x, y, cz, tool, prev, V, feat, flush, seq, tower, zone = [], 0., 0., 0., None, None, 0., '', False, 0, False, False
     for l in text.split('\n'):
         if l.startswith('; Z_HEIGHT:'):
             cz = float(l.split(':')[1])
@@ -379,6 +447,10 @@ def layer_segments(text, z):
             tower = True
         elif l.startswith('; WIPE_TOWER_END') or l.startswith('; COLOR_BLEND_START'):
             tower = False
+        if l.startswith('; COLOR_BLEND_START'):
+            zone = True
+        elif l.startswith('; COLOR_BLEND_END'):
+            zone = False
         mt = TOOL.match(l)
         if mt:
             prev, tool, V = tool, int(mt.group(1)), 0.0
@@ -389,7 +461,7 @@ def layer_segments(text, z):
         p = params(m.group(2)); nx, ny, e = p.get('X', x), p.get('Y', y), p.get('E', 0.0)
         xy = 'X' in p or 'Y' in p
         if e > 0 and xy and abs(cz - z) < 1e-3 and 'Prime' not in feat and 'Custom' not in feat and not tower:
-            segs.append((x, y, nx, ny, tool, prev, V, feat, seq)); seq += 1
+            segs.append((x, y, nx, ny, tool, prev, V, feat if not zone else feat + ' [blend zone]', seq)); seq += 1
         if e > 0 and (xy or flush or 'Compensate' in l):
             V += e * FIL_AREA
         x, y = nx, ny
@@ -400,32 +472,34 @@ def old_fraction(V, half_life):
     return math.exp(-max(V - PLAIN_ONSET, 0.0) * math.log(2) / half_life)
 
 
-def lifted(colors, frm, to):
-    """dark pairs (black into navy) are invisible on screen: brighten both by the same factor"""
+def lifted(colors, idx):
+    """dark filaments (black, navy) are invisible on screen: brighten the dark ones in the blends"""
     lum = lambda c: 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
-    top = max(lum(colors[frm]), lum(colors[to]))
+    top = max(lum(colors[i]) for i in idx)
     if top >= 0.25:
         return colors, 1.0
     f = 0.32 / max(top, 0.02)
-    return [np.clip(c * f, 0, 1) if i in (frm, to) else c for i, c in enumerate(colors)], f
+    return [np.clip(c * f, 0, 1) if (i in idx and lum(c) < 0.25) else c for i, c in enumerate(colors)], f
 
 
-def render(segs, colors, frm, to, mode, half_life=None, bbox=None, title='', out=None):
+def render(segs, colors, pair_h, mode, bbox=None, out=None):
+    """pair_h: {(from, to): half_life} for the blended changes (0-based tools)"""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     lines, cols = [], []
-    blend_seq = [s[8] for s in segs if s[4] == to and s[5] == frm]
+    in_zone = lambda s: s[7].endswith('[blend zone]')
+    blend_seq = [s[8] for s in segs if in_zone(s)]
     lo, hi = (min(blend_seq), max(blend_seq)) if blend_seq else (0, 1)
     cmap = matplotlib.colormaps['viridis']
     for x0, y0, x1, y1, t, p, V, feat, seq in segs:
         c = colors[t] if t is not None else np.array([.5, .5, .5])
-        if mode == 'predict' and t == to and p == frm:
-            f = old_fraction(V, half_life)
-            c = colors[frm] * f + colors[to] * (1 - f)
+        if mode == 'predict' and (p, t) in pair_h:
+            f = old_fraction(V, pair_h[(p, t)])
+            c = colors[p] * f + colors[t] * (1 - f)
         elif mode == 'order':
-            if t == to and p == frm:
+            if feat.endswith('[blend zone]'):
                 c = np.array(cmap((seq - lo) / max(hi - lo, 1))[:3])
             else:
                 c = c * 0.25 + 0.75 * np.array([.92, .92, .92])
@@ -465,57 +539,67 @@ def printer_name(cfg):
 
 # ----------------------------------------------------------------------------- dashboard
 
-def build_report(orig, new, spec, info, chk, out_html, plate_out, log):
-    cfg = new['config']
-    z = float(spec['layer_z']); frm, to = int(spec['from']) - 1, int(spec['to']) - 1
+def build_report(orig, new, spec, infos, chk, out_html, plate_out, log):
+    cfg = new.get('config') or orig['config']
+    pairs = [(i['frm'] - 1, i['to'] - 1) for i in infos]
+    z = infos[0]['layer_z']                      # the dashboard shows the (first) blended layer
     raw_colors = filament_colors(cfg)
-    colors, lift = lifted(raw_colors, frm, to)
+    colors, lift = lifted(raw_colors, sorted({t for pr in pairs for t in pr}))
     so, sn = layer_segments(orig['gcode'], z), layer_segments(new['gcode'], z)
     bbox = layer_bbox([s for s in sn if s[0] > 0])
     printer = printer_name(cfg)
     hexes = (cfg.get('filament_colour') or ['#888888'] * 16)
-    cal = cal_load().get(cal_key(printer, hexes[frm], hexes[to]))
-    hls = [('Calibrated', cal['half_life'])] if cal else []
-    hls += [(lbl, h) for lbl, h in zip(('Fast clear-out', 'Typical', 'Slow clear-out'), DEFAULT_HALF_LIVES)]
-    main_h = hls[0][1] if cal else DEFAULT_HALF_LIVES[1]
+    cals = {pr: cal_load().get(cal_key(printer, hexes[pr[0]], hexes[pr[1]])) for pr in pairs}
+    any_cal = any(cals.values())
+    def ph(h):                                   # calibrated pairs keep their own rate
+        return {pr: (cals[pr]['half_life'] if cals[pr] else h) for pr in pairs}
+    panels = ([('Calibrated', None)] if any_cal else []) + list(zip(('Fast clear-out', 'Typical', 'Slow clear-out'), DEFAULT_HALF_LIVES))
+    main = ph(DEFAULT_HALF_LIVES[1])
+    def cap(lbl, h):
+        if h is None:
+            return 'calibrated rates: ' + ', '.join(f'{a + 1}→{b + 1} {cals[(a, b)]["half_life"]:.0f} mm³' for a, b in pairs if cals[(a, b)])
+        return f'half of the old color gone every {h:.0f} mm³' + (' (calibrated pairs use their own rate)' if any_cal else '')
     preds = ''.join(
-        f'<figure class="card{" cal" if lbl == "Calibrated" else ""}"><img src="{render(sn, colors, frm, to, "predict", h, bbox)}" alt="Predicted colors, {lbl.lower()}">'
-        f'<figcaption><b>{html.escape(lbl)}</b> · half of the old color gone every {h:.0f} mm³</figcaption></figure>'
-        for lbl, h in hls)
+        f'<figure class="card{" cal" if h is None else ""}"><img src="{render(sn, colors, ph(h if h else DEFAULT_HALF_LIVES[1]), "predict", bbox)}" alt="Predicted colors, {lbl.lower()}">'
+        f'<figcaption><b>{html.escape(lbl)}</b> · {cap(lbl, h)}</figcaption></figure>'
+        for lbl, h in panels)
     m = re.search(r'total estimated time: ([^\n;]+)', new['gcode'])
     w = re.search(r'total filament weight \[g\] : ([^\n]+)', new['gcode'])
-    fv = flush_value(cfg, frm, to)
-    rows = [('Plate file', html.escape(os.path.basename(plate_out))),
-            ('Printer profile', html.escape(printer)),
-            ('Color change', f'<span class="sw" style="background:{hexes[frm]}"></span>filament {frm + 1} → '
-                             f'<span class="sw" style="background:{hexes[to]}"></span>filament {to + 1}, layer at {z:g} mm'),
-            ('Blend zone', f'{info["moves"]} line pieces, {info["zone_volume"]:.0f} mm³ of plastic'),
-            ('Purge for this change', f'{fv:.0f} mm³' if fv is not None else 'unknown'),
-            ('Prime tower', 'moved to after the blend zone' if info['tower_moved'] else 'none right after the change'),
-            ('Print time', html.escape(m.group(1).strip()) if m else '—'),
-            ('Filament (g, per slot)', html.escape(w.group(1).strip()) if w else '—')]
+    rows = [('Plate file', html.escape(os.path.basename(plate_out))), ('Printer profile', html.escape(printer))]
+    for i in infos:
+        a_, b_ = i['frm'] - 1, i['to'] - 1
+        fv = flush_value(cfg, a_, b_)
+        purge_now = (fv - i['purge_removed_mm'] * FIL_AREA) if fv is not None else None
+        rows.append((f'Blend {i["frm"]} → {i["to"]}',
+                     f'<span class="sw" style="background:{hexes[a_]}"></span>filament {a_ + 1} → '
+                     f'<span class="sw" style="background:{hexes[b_]}"></span>filament {b_ + 1} at {i["layer_z"]:g} mm · '
+                     f'{i["zone_volume"]:.0f} mm³ zone, {i["moves"]} pieces · purge '
+                     + (f'{max(purge_now, 0):.0f} mm³ (was {fv:.0f})' if purge_now is not None else 'unknown')
+                     + (' · tower moved after the zone' if i['tower_moved'] else '')))
+    rows += [('Print time (slicer estimate)', html.escape(m.group(1).strip()) if m else '—'),
+             ('Filament (g, per slot)', html.escape(w.group(1).strip()) if w else '—')]
     table = ''.join(f'<tr><th>{a}</th><td>{b}</td></tr>' for a, b in rows)
     chk_html = ''.join(f'<li class="{"ok" if ok else "bad"}"><span>{"✓" if ok else "✗"}</span> {html.escape(t)} '
                        f'<small>{html.escape(d)}</small></li>' for t, ok, d in chk)
-    note = (f'Colors on this page are brightened {lift:.1f}× so the two dark filaments can be told apart on screen.'
+    note = (f'Dark filaments on this page are brightened {lift:.1f}× so they can be told apart on screen.'
             if lift > 1 else 'Colors are the filament colors set in the project.')
     tpl = open(os.path.join(HERE, '..', 'assets', 'blend_report.html'), encoding='utf-8').read()
     fill = {
         'TITLE': html.escape(spec.get('title') or os.path.splitext(os.path.basename(plate_out))[0]),
         'DATE': datetime.date.today().strftime('%d %b %Y'),
         'PLATE_FILE': html.escape(plate_out),
-        'MAIN_LABEL': 'calibrated' if cal else 'typical (not calibrated yet)',
-        'MAIN_PRED': render(sn, colors, frm, to, 'predict', main_h, bbox),
-        'STUDIO_VIEW': render(sn, colors, frm, to, 'flat', None, bbox),
-        'ORDER_VIEW': render(sn, colors, frm, to, 'order', None, bbox),
-        'UNORDERED': render(so, colors, frm, to, 'predict', main_h, bbox),
+        'MAIN_LABEL': 'calibrated' if any_cal else 'typical (not calibrated yet)',
+        'MAIN_PRED': render(sn, colors, main, 'predict', bbox),
+        'STUDIO_VIEW': render(sn, colors, {}, 'flat', bbox),
+        'ORDER_VIEW': render(sn, colors, main, 'order', bbox),
+        'UNORDERED': render(so, colors, main, 'predict', bbox),
         'PREDICTIONS': preds,
         'TABLE': table,
         'CHECKS': chk_html,
         'COLOR_NOTE': html.escape(note),
         'LOG': html.escape(' · '.join(log)),
-        'CAL_STATUS': (f'Calibrated on {html.escape(cal.get("date", "?"))} from a test print.' if cal else
-                       'Not calibrated for this printer and color pair yet, so three clear-out rates are shown.'),
+        'CAL_STATUS': ('Pairs marked calibrated use the rate measured from a test print.' if any_cal else
+                       'Not calibrated for this printer and these colors yet, so three clear-out rates are shown.'),
     }
     for k, v in fill.items():
         tpl = tpl.replace('{{' + k + '}}', v)
@@ -523,7 +607,10 @@ def build_report(orig, new, spec, info, chk, out_html, plate_out, log):
 
 # ----------------------------------------------------------------------------- 3MF project prep
 
-def prep_project(src, out, layer=None, order=None, zero_flush=None, no_arcs=False, flush_value_=0):
+def prep_project(src, out, layer=None, order=None, zero_flush=None, no_arcs=False, flush_value_=0, orders=None):
+    """orders: [(layer, [filaments...]), ...] - several per-layer filament orders (1-based)"""
+    if layer and order:
+        orders = (orders or []) + [(layer, order)]
     zi = zipfile.ZipFile(src)
     tmp = out + '.tmp'
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zo:
@@ -541,12 +628,12 @@ def prep_project(src, out, layer=None, order=None, zero_flush=None, no_arcs=Fals
                     if dd:
                         dd[0] = ';'.join(sorted(set(filter(None, dd[0].split(';'))) | {'enable_arc_fitting'}))
                 b = json.dumps(cfg, indent=4).encode()
-            elif info.filename == 'Metadata/model_settings.config' and layer and order:
+            elif info.filename == 'Metadata/model_settings.config' and orders:
                 s = b.decode()
                 s = re.sub(r'\s*<metadata key="other_layers_print_sequence(_nums)?" value="[^"]*"/>', '', s)
-                seq = f'{layer} {layer} ' + ' '.join(str(o) for o in order)
+                seq = ' '.join(f'{ly} {ly} ' + ' '.join(str(o) for o in od) for ly, od in sorted(orders))
                 s = s.replace('<metadata key="plater_id"', f'<metadata key="other_layers_print_sequence" value="{seq}"/>\n'
-                              f'    <metadata key="other_layers_print_sequence_nums" value="1"/>\n    <metadata key="plater_id"', 1)
+                              f'    <metadata key="other_layers_print_sequence_nums" value="{len(orders)}"/>\n    <metadata key="plater_id"', 1)
                 b = s.encode()
             zo.writestr(info, b)
     os.replace(tmp, out)
@@ -596,6 +683,7 @@ def main():
     p = sub.add_parser('inspect'); p.add_argument('plate'); p.add_argument('--plate-index', type=int, default=1)
     p = sub.add_parser('prep'); p.add_argument('project'); p.add_argument('--out', required=True)
     p.add_argument('--layer', type=int, help='1-based layer number for --order'); p.add_argument('--order', help='filament order on that layer, e.g. 1,2,3,4')
+    p.add_argument('--layer-order', action='append', default=[], help='LAYER:ORDER, repeatable, e.g. 2:2,3,4,1 --layer-order 3:2,1,3,4')
     p.add_argument('--zero-flush', help='FROM:TO filaments (1-based) whose purge is set to --flush (default 0)')
     p.add_argument('--flush', type=float, default=0); p.add_argument('--no-arcs', action='store_true')
     p = sub.add_parser('blend'); p.add_argument('plate'); p.add_argument('--spec', required=True)
@@ -625,47 +713,49 @@ def main():
     elif a.cmd == 'prep':
         zf = tuple(int(v) for v in a.zero_flush.split(':')) if a.zero_flush else None
         order = [int(v) for v in a.order.split(',')] if a.order else None
-        prep_project(a.project, a.out, a.layer, order, zf, a.no_arcs, a.flush)
+        orders = [(int(v.split(':')[0]), [int(x) for x in v.split(':')[1].split(',')]) for v in a.layer_order]
+        prep_project(a.project, a.out, a.layer, order, zf, a.no_arcs, a.flush, orders)
         print('wrote', a.out)
     elif a.cmd in ('blend', 'report'):
-        spec_path = a.spec; spec = json.load(open(spec_path)); zone = Zone(spec, os.path.dirname(os.path.abspath(spec_path)))
-        z = float(spec['layer_z']); frm, to = int(spec['from']) - 1, int(spec['to']) - 1
+        spec_path = a.spec; spec = json.load(open(spec_path)); sdir = os.path.dirname(os.path.abspath(spec_path))
         log = []
         if a.cmd == 'blend':
             orig = read_plate(a.plate, a.plate_index)
-            fv = flush_value(orig['config'], frm, to)
-            if fv is not None and fv > 30:
-                log.append(f'warning: purge for this change is still {fv:.0f} mm3 - most of the old color goes to the chute')
-            text, info = blend_gcode(orig['gcode'], zone, z, frm, to, log)
-            chk = checks(orig['gcode'], text, z)
-            write_plate(a.plate, a.out, text, a.plate_index)
-            new = read_plate(a.out, a.plate_index)
+            for b in blend_items(spec):
+                fv = flush_value(orig['config'], int(b['from']) - 1, int(b['to']) - 1)
+                if b.get('purge') is None and fv is not None and fv > 30:
+                    log.append(f"warning: purge for {b['from']}->{b['to']} is still {fv:.0f} mm3 - set \"purge\" in the spec")
+            text, infos = apply_blends(orig['gcode'], spec, sdir, log)
+            removed = sum(i['purge_removed_mm'] for i in infos)
+            chk = checks(orig['gcode'], text, [i['layer_z'] for i in infos], removed)
+            if all(ok for _, ok, _ in chk):
+                write_plate(a.plate, a.out, text, a.plate_index)
+            new = dict(orig, gcode=text)
             report_out = a.report
         else:
             orig, new = read_plate(a.original), read_plate(a.blended)
-            _, info = blend_gcode(orig['gcode'], zone, z, frm, to, log)
-            chk = checks(orig['gcode'], new['gcode'], z)
+            _, infos = apply_blends(orig['gcode'], spec, sdir, log)
+            chk = checks(orig['gcode'], new['gcode'], [i['layer_z'] for i in infos], sum(i['purge_removed_mm'] for i in infos))
             report_out = a.out
         if report_out:
-            build_report(orig, new, spec, info, chk, report_out, a.out if a.cmd == 'blend' else a.blended, log)
-        print(json.dumps(dict(info, checks=[dict(check=t, ok=ok, detail=d) for t, ok, d in chk], log=log,
+            build_report(orig, new, spec, infos, chk, report_out, a.out if a.cmd == 'blend' else a.blended, log)
+        print(json.dumps(dict(blends=infos, checks=[dict(check=t, ok=ok, detail=d) for t, ok, d in chk], log=log,
                               out=a.out, report=report_out), indent=1))
         if not all(ok for _, ok, _ in chk):
             sys.exit(2)
     elif a.cmd == 'hook':
-        spec = json.load(open(a.spec)); zone = Zone(spec, os.path.dirname(os.path.abspath(a.spec)))
-        z = float(spec['layer_z']); frm, to = int(spec['from']) - 1, int(spec['to']) - 1
+        spec = json.load(open(a.spec))
         orig = open(a.gcode, encoding='utf-8', errors='replace').read()
         if '; COLOR_BLEND_START' in orig:
             print('already blended'); return
         log = []
-        text, info = blend_gcode(orig, zone, z, frm, to, log)
-        chk = checks(orig, text, z)
+        text, infos = apply_blends(orig, spec, os.path.dirname(os.path.abspath(a.spec)), log)
+        chk = checks(orig, text, [i['layer_z'] for i in infos], sum(i['purge_removed_mm'] for i in infos))
         if not all(ok for _, ok, _ in chk):
             sys.exit('color blend: safety check failed, G-code left unchanged: '
                      + '; '.join(f'{t}: {d}' for t, ok, d in chk if not ok))
         open(a.gcode, 'w', encoding='utf-8').write(text)
-        print(f"color blend: {info['moves']} lines, {info['zone_volume']:.0f} mm3 reordered on layer {z:g}")
+        print('color blend: ' + '; '.join(f"{i['frm']}->{i['to']} at z={i['layer_z']:g}: {i['moves']} pieces, {i['zone_volume']:.0f} mm3" for i in infos))
     elif a.cmd == 'make-strip':
         make_strip(a.out, a.length, a.width, to=a.to); print('wrote', a.out)
     elif a.cmd == 'calibrate':

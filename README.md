@@ -60,11 +60,12 @@ What you get:
 
 Good to know:
 
-- "Partial purging volume set to 0" in Bambu Studio is expected — that missing purge is the blend.
+- Only the blended color change skips its purge; every other change, including the same two colors elsewhere in the print, keeps its normal purge.
 - Don't move or rescale the model after the blend is set up; it's pinned to the plate. Ask Claude to rebuild.
 - Works best between similar or dark colors (black → navy). Into white or pale colors, leftovers look like gray or brown streaks.
 - One blend per filament change: on multi-copy plates, only the first copy after the change gets the full blend.
-- After your first print, tell Claude which dashboard panel matches; it saves that clear-out rate for your printer and color pair (`~/.bambu-studio-connector/blend-calibration.json`).
+- After your first print, tell Claude which dashboard panel matches; it saves that clear-out rate for your printer and color pair (`~/.bambu-studio-connector/blend-calibration.json`). Black into a dark blue cleared fast on an A1 (about half every 10 mm³), so keep blend zones small.
+- Two blends can share a layer (e.g. black fading into blue on one part and blue fading into black on another).
 - Needs a Python 3 with numpy for the script (macOS's `/usr/bin/python3` has it) and matplotlib for the dashboard.
 
 ## Caveats
